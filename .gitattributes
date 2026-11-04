@@ -1,0 +1,16 @@
+*.prg binary
+*.ttp binary
+*.img binary
+*.IMG binary
+*.gem binary
+*.GEM binary
+*.iff binary
+*.neo binary
+*.rst binary
+*.spu binary
+*.spc binary
+*.sps binary
+*.pcs binary
+*.pbx binary
+*.pi[123] binary
+*.pc[123] binary
