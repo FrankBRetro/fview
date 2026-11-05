@@ -1,7 +1,9 @@
 /*
- * jobcore.c - the work a job does, and where its results are allocated.
- * Linked into both fview.prg (cooperative jobs under TOS) and fvwork.ttp
- * (background worker under MiNT). No GEM calls in here.
+ * jobcore.c - where a job's results are allocated (shared memory for a
+ * worker), and the step log. Linked into the programs (cooperative jobs
+ * under TOS) and their background workers under MiNT. No GEM in here.
+ * The work itself is job_exec: jobexec.c (FView, FConv) or arcjob.c
+ * (FArchive).
  */
 #include <stdio.h>
 #include <string.h>
@@ -162,66 +164,12 @@ void dbg(const char *fmt, ...)
     fclose(f);
 }
 
-/* -------------------------------------------------------------- the work */
+/* ------------------------------------------------------------ notes */
 
-int job_exec(JOBREQ *q, JOBRES *r, PROG *pg)
+void (*job_note_hook)(int kind, const char *text);
+
+void job_note(int kind, const char *text)
 {
-    int e = E_OK;
-
-    fv_errdetail[0] = 0;
-    if (q->op == OP_CONVERT) {
-        r->kind = K_NONE;
-        e = convert_picture(q->path, q->ftype, q->out, q->xfmt, q->outpdf,
-                            q->maxw, q->maxh, &q->pf, &q->disp, pg);
-    } else if (q->op == OP_RENDER) {
-        long wdw;
-        u8 *buf;
-        r->kind = K_IMAGE;
-        e = render_display(&q->src, q->tw, q->th, &q->disp, &q->pf,
-                           r->pal, &buf, &wdw, pg);
-        if (!e) {
-            r->dw = q->tw; r->dh = q->th; r->wdwidth = wdw;
-        }
-    } else if (FT_IS_GRAPHIC(q->ftype)) {
-        IMAGE *im = &r->im;
-        img_init(im);
-        r->kind = K_IMAGE;
-        pg->halves = 1;
-        e = decode_picture(q->path, q->ftype, im, &q->pf, &q->disp, pg);
-        if (!e) {
-            long tw, th, wdw;
-            u8 *buf;
-            img_display_size(im, &q->disp, &tw, &th);
-            if (q->tw > 0 && q->th > 0)          /* fit to window */
-                img_fit(tw, th, q->tw, q->th, &tw, &th);
-            pg->phase = 1;
-            e = render_display(im, tw, th, &q->disp, &q->pf, r->pal,
-                               &buf, &wdw, pg);
-            if (!e) {
-                r->dw = tw; r->dh = th; r->wdwidth = wdw;
-            }
-        }
-    } else if (q->ftype == FT_PDF) {
-        u8 *b;
-        r->kind = K_PDF;
-        e = dec_pdf(q->path, &q->pf, pg, &b, &r->doclen);
-    } else if (q->ftype == FT_GEM) {
-        u8 *b;
-        r->kind = K_PDF;                 /* drawn like a one-page PDF */
-        e = dec_gem(q->path, &q->pf, pg, &b, &r->doclen);
-    } else {
-        u8 *b;
-        r->kind = K_TEXT;
-        e = dec_text(q->path, q->ftype, &q->pf, pg, &b, &r->doclen);
-    }
-    if (pg->cancelled)
-        e = E_CANCEL;
-    dbg("job_exec op %d ftype %d -> err %d kind %d dw %ld dh %ld wdw %ld",
-        q->op, q->ftype, e, r->kind, r->dw, r->dh, r->wdwidth);
-    if (e)
-        res_free_all();
-    r->err = e;
-    strncpy(r->detail, fv_errdetail, sizeof r->detail - 1);
-    r->detail[sizeof r->detail - 1] = 0;
-    return e;
+    if (job_note_hook)
+        job_note_hook(kind, text);
 }

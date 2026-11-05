@@ -1,5 +1,6 @@
 /*
- * worker.c - FVWORK.TTP, fview's background worker for MiNT.
+ * worker.c - FVWORK.TTP (FView, FConv) and FAWORK.TTP (FArchive), the
+ * background worker for MiNT; jobexec.c or arcjob.c is linked in.
  *
  * fview starts one of these per job with Pexec(100) (asynchronous), so it
  * runs side by side with the GUI in its own memory. (fork() can't be used
@@ -69,6 +70,18 @@ static int prog(PROG *p, long done, long total)
     return cancel;
 }
 
+static void note(int kind, const char *text)
+{
+    long n = (long)strlen(text);
+    WMSG m;
+    m.type = WM_NOTE;
+    m.a = n;
+    m.b = kind;
+    Fwrite(fd, sizeof m, &m);
+    if (n)
+        Fwrite(fd, n, text);
+}
+
 static long readall(void *buf, long n)
 {
     long got = 0;
@@ -113,6 +126,7 @@ int main(void)
     memset(&res, 0, sizeof res);
     memset(&pg, 0, sizeof pg);
     pg.fn = prog;
+    job_note_hook = note;
     res_set_shared(1);
     if (req.op == OP_RENDER) {
         req.src.px = req.src_shm[0] ? shm_attach(req.src_shm, 0) : 0;

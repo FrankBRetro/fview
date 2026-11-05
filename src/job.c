@@ -38,6 +38,7 @@ int coop_busy;
 /* which program this is, for the step log (FConv sets its own) */
 const char *job_app_name = "fview " FV_VERSION " (" FV_CPU ")";
 const char *job_log_name = "FVIEW.LOG";
+const char *job_worker_name = "FVWORK.TTP";   /* FArchive: FAWORK.TTP */
 
 #define MAXJOBS 32
 static JOB *jobs[MAXJOBS];
@@ -130,7 +131,7 @@ static void find_worker(const char *dir)
     char p[256];
     worker_path[0] = 0;
     strcpy(p, dir);
-    strcat(p, "FVWORK.TTP");
+    strcat(p, job_worker_name);
     if (file_exists(p)) {
         strcpy(worker_path, p);
         return;
@@ -139,7 +140,8 @@ static void find_worker(const char *dir)
     p[0] = Dgetdrv() + 'A';
     p[1] = ':';
     Dgetpath(p + 2, 0);
-    strcat(p, "\\FVWORK.TTP");
+    strcat(p, "\\");
+    strcat(p, job_worker_name);
     if (file_exists(p))
         strcpy(worker_path, p);
 }
@@ -363,6 +365,32 @@ static void take_result(JOB *j)
     }
 }
 
+static const char *wmsg(const char *what)
+{
+    static char b[80];
+    sprintf(b, "%s %s", job_worker_name, what);
+    return b;
+}
+
+/* a WM_NOTE: its text follows the message */
+static void take_note(JOB *j, WMSG *m)
+{
+    char t[300];
+    long n = m->a < 0 ? 0 : m->a > 299 ? 299 : m->a, got = 0;
+    while (got < m->a) {
+        char c[64];
+        long k = m->a - got > 64 ? 64 : m->a - got, r = Fread((short)j->fd, k, c);
+        if (r <= 0)
+            break;
+        if (got < n)
+            memcpy(t + got, c, (got + r > n ? n - got : r));
+        got += r;
+    }
+    t[got < n ? got : n] = 0;
+    if (j->win)
+        win_note(j->win, (int)m->b, t);
+}
+
 static void worker_failed(JOB *j, int i, const char *why)
 {
     dbg("worker failed: %s", why);
@@ -385,7 +413,7 @@ void job_poll(void)
             WMSG m;
             if (Fread((short)j->fd, sizeof m, &m) != (long)sizeof m) {
                 worker_failed(j, i, j->hello ? "worker process ended unexpectedly"
-                                             : "FVWORK.TTP could not start");
+                                             : wmsg("could not start"));
                 break;
             }
             if (m.type == WM_HELLO) {
@@ -393,8 +421,10 @@ void job_poll(void)
                 j->hello = 1;
                 if (Fwrite((short)j->wfd, sizeof(JOBREQ), &j->q) != (long)sizeof(JOBREQ)) {
                     Pkill(j->pid, SIGKILL);
-                    worker_failed(j, i, "could not send the job to FVWORK");
+                    worker_failed(j, i, "could not send the job to the worker");
                 }
+            } else if (m.type == WM_NOTE) {
+                take_note(j, &m);
             } else if (m.type == WM_STAGE) {
                 if (j->win)
                     win_stage(j->win, (int)m.a);
@@ -417,13 +447,13 @@ void job_poll(void)
             if (r > 0 && (r >> 16) == j->pid) {
                 j->pid = 0;                          /* already reaped */
                 worker_failed(j, i, j->hello ? "worker process ended unexpectedly"
-                                             : "FVWORK.TTP could not start");
+                                             : wmsg("could not start"));
                 continue;
             }
         }
         if (!j->hello && now_ms() - j->t0 > 30000L) {
             Pkill(j->pid, SIGKILL);
-            worker_failed(j, i, "FVWORK.TTP did not answer");
+            worker_failed(j, i, wmsg("did not answer"));
         }
     }
 }
@@ -475,6 +505,12 @@ static int coop_prog(PROG *p, long done, long total)
     return j->cancel;
 }
 
+static void coop_note(int kind, const char *text)
+{
+    if (coop_job && coop_job->win)
+        win_note(coop_job->win, kind, text);
+}
+
 void job_run_pending(void)
 {
     int i;
@@ -495,6 +531,7 @@ void job_run_pending(void)
     j->running = 1;
     memset(&pg, 0, sizeof pg);
     pg.fn = coop_prog;
+    job_note_hook = coop_note;
     res_set_shared(0);
     /* let the window show its progress panel before the work starts */
     gui_coop_poll();

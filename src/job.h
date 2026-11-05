@@ -5,8 +5,8 @@
 
 #include "fview.h"
 
-enum { OP_LOAD = 1, OP_RENDER, OP_CONVERT };
-enum { K_NONE = 0, K_IMAGE, K_TEXT, K_PDF, K_MAIN };
+enum { OP_LOAD = 1, OP_RENDER, OP_CONVERT, OP_ARC_LIST, OP_ARC_EXTRACT, OP_ARC_ADD };
+enum { K_NONE = 0, K_IMAGE, K_TEXT, K_PDF, K_MAIN, K_ARCLIST };
 
 typedef struct {
     int   err;
@@ -20,6 +20,7 @@ typedef struct {
     char  attached[RB_MAX];      /* block is attached shared memory      */
     long  size[RB_MAX];
     u8   *ptr[RB_MAX];           /* addresses in the GUI process         */
+    long  acount[4];             /* FArchive: ok, failed, skipped, renamed */
 } JOBRES;
 
 /* The request part of a job: this is what is sent to the worker. */
@@ -37,7 +38,12 @@ typedef struct {
     int   xfmt;                  /* XF_*                                 */
     int   outpdf;                /* write a PDF instead of an IMG        */
     long  maxw, maxh;            /* shrink to fit, 0 = keep the size      */
+    /* OP_ARC_* (FArchive): archive in path, folder in out              */
+    int   afmt;                  /* AF_* for a new archive               */
+    int   aflags;                /* AJ_* below                           */
+    char  list[256];             /* file of names (add) / selection (extract) */
 } JOBREQ;
+enum { AJ_REPLACE = 1, AJ_RENAME83 = 2, AJ_SUBDIRS = 4, AJ_PATHS = 8, AJ_FAST = 16, AJ_BEST = 32 };
 
 typedef struct JOB {
     JOBREQ q;
@@ -63,11 +69,16 @@ typedef struct JOB {
  *   worker: PROG... RESULT + JOBRES
  *   GUI: one acknowledge byte (shared memory attached), worker exits  */
 typedef struct { short type; long a, b; } WMSG;
-enum { WM_PROG = 1, WM_RESULT, WM_HELLO, WM_STAGE };
+enum { WM_PROG = 1, WM_RESULT, WM_HELLO, WM_STAGE, WM_NOTE };
+/* WM_NOTE: a = text length (the text follows), b = NOTE_* */
+enum { NOTE_LOG = 0, NOTE_ITEM };
 #define WORKER_ENV "FVWORK"
 
 /* jobcore.c */
 int   job_exec(JOBREQ *q, JOBRES *r, PROG *pg);
+/* a line for the GUI (log, or "i n name" for NOTE_ITEM) from a job */
+void  job_note(int kind, const char *text);
+extern void (*job_note_hook)(int kind, const char *text);
 void  res_set_shared(int on);    /* worker: results in U:\SHM          */
 void  res_collect(JOBRES *r);    /* hand allocated blocks to a result   */
 void  res_free_all(void);

@@ -157,6 +157,7 @@ void  win_fake_iconify(VWIN *w, GRECT *r);
 void  win_fake_uniconify(VWIN *w);
 void  win_progress(VWIN *w, long done, long total);
 void  win_stage(VWIN *w, int stage);
+void  win_note(VWIN *w, int kind, const char *text);   /* FArchive's log lines */
 void  win_load(VWIN *w, const char *path);
 void  win_job_finished(VWIN *w, JOB *j);
 void  win_set_zoom(VWIN *w, int zoom);

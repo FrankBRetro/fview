@@ -7,3 +7,4 @@ test/convtest
 # editor / Finder leftovers
 *.bak
 .DS_Store
+test/arctest

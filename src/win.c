@@ -409,6 +409,14 @@ void win_stage(VWIN *w, int stage)
     dbg("window %d: dithering stage", w->handle);
 }
 
+/* FArchive's jobs send log lines; FView's and FConv's do not */
+void win_note(VWIN *w, int kind, const char *text)
+{
+    (void)w;
+    (void)kind;
+    (void)text;
+}
+
 void win_progress(VWIN *w, long done, long total)
 {
     int pct;
