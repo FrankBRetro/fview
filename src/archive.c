@@ -49,7 +49,7 @@ void ar_log(AOPT *o, const char *fmt, ...)
     if (!o || !o->log)
         return;
     va_start(ap, fmt);
-    vsprintf(b, fmt, ap);
+    vsnprintf(b, sizeof b, fmt, ap);
     va_end(ap);
     o->log(o->ctx, b);
 }
@@ -716,14 +716,23 @@ static void made_add(XCTX *x, const char *path)
     }
 }
 
-static void join(char *out, const char *dir, const char *name)
+/* dir + name into out (256 bytes); -1 (and out = dir) if too long */
+static int join(char *out, const char *dir, const char *name)
 {
-    size_t n;
-    strcpy(out, dir);
-    n = strlen(out);
-    if (n && out[n - 1] != '/' && out[n - 1] != '\\' && out[n - 1] != ':')
-        out[n++] = ASEP, out[n] = 0;
-    strcat(out, name);
+    size_t n = strlen(dir), m = strlen(name);
+    int sep = n && dir[n - 1] != '/' && dir[n - 1] != '\\' && dir[n - 1] != ':';
+    if (n + sep + m > 255) {
+        if (n < 256)
+            strcpy(out, dir);
+        else
+            out[0] = 0;
+        return -1;
+    }
+    memcpy(out, dir, n);
+    if (sep)
+        out[n++] = ASEP;
+    memcpy(out + n, name, m + 1);
+    return 0;
 }
 
 /* name for one path part in folder dir; isdir picks the folder rules */
@@ -790,13 +799,17 @@ static int dest_path(XCTX *x, const AENT *e, char *out)
             if (!strcmp(m->from, from))
                 break;
         if (!m) {
-            char nm[64];
+            char nm[256];
             m = calloc(1, sizeof(DMAP));
             if (!m)
                 return -1;
             strcpy(m->from, from);
             part_name(x, dir, list[k], 1, nm);
-            join(m->to, dir, nm);
+            if (join(m->to, dir, nm)) {
+                ar_log(x->o, "Path too long: %.200s", e->name);
+                free(m);
+                return -1;
+            }
             if (strcmp(nm, list[k]) && x->o->rename83) {
                 ar_log(x->o, "Folder %s renamed %s", from, nm);
                 x->o->nren++;
@@ -816,9 +829,12 @@ static int dest_path(XCTX *x, const AENT *e, char *out)
     }
     last = list[n - 1];
     {
-        char nm[64];
+        char nm[256];
         part_name(x, dir, last, 0, nm);
-        join(out, dir, nm);
+        if (join(out, dir, nm)) {
+            ar_log(x->o, "Path too long: %.200s", e->name);
+            return -1;
+        }
         if (strcmp(nm, last)) {
             ar_log(x->o, "Renamed %s to %s", e->name, nm);
             x->o->nren++;
@@ -1517,6 +1533,7 @@ typedef struct {
     int    n, cap;
     AOPT  *o;
     int    err;
+    const char *self;                  /* the archive: never into itself */
 } ILIST;
 
 static int il_push(ILIST *l, const char *path, const char *name, int dir, long size, u32 dt)
@@ -1556,10 +1573,15 @@ static int walk_fn(void *ctx, const char *nm)
     u32 dt;
     int isdir;
     join(p, w->dir, nm);
-    if (strlen(p) > 250 || strlen(w->name) + strlen(nm) > 250)
+    if (strlen(p) > 250 || strlen(w->name) + strlen(nm) > 250) {
+        ar_log(w->l->o, "Path too long, skipped: %.200s", p);
+        w->l->o->nskip++;
         return 0;
+    }
     sprintf(an, "%s/%s", w->name, nm);
     if (afs_info(p, &size, &dt, &isdir) != E_OK)
+        return 0;
+    if (w->l->self && lc_eq(p, w->l->self))
         return 0;
     if (isdir) {
         if (w->l->o->subdirs && w->depth < 32)
@@ -1628,6 +1650,7 @@ int arch_add(const char *path, int fmt, char **files, int nfiles, AOPT *o)
     memset(&l, 0, sizeof l);
     memset(&w, 0, sizeof w);
     l.o = o;
+    l.self = path;
     /* what is there already */
     if (afs_isdir(path) == 0) {
         err = arch_open(&old, path);
@@ -1852,6 +1875,17 @@ int arch_add(const char *path, int fmt, char **files, int nfiles, AOPT *o)
             continue;
         if (o->item)
             o->item(o->ctx, ++k, l.n, it->name);
+        if (!it->dir) {
+            /* make sure it opens before its header is written */
+            FILE *t = fopen(it->path, "rb");
+            if (!t) {
+                ar_log(o, "Cannot read %s", it->path);
+                o->nfail++;
+                pc.base += it->size;
+                continue;
+            }
+            fclose(t);
+        }
         switch (fmt) {
         case AF_ZIP: err = zip_add(&w, it); break;
         case AF_LHA: err = lha_add(&w, it); break;
@@ -1944,14 +1978,23 @@ fail:
         if (err != E_CANCEL)
             ar_log(o, "Could not write %s: %s", ar_base(path), fv_errstr(err));
     } else {
-        if (have_old && remove(path) != 0) {
+        /* the old archive steps aside first, and only goes once the new
+           one has its name */
+        char bak[300];
+        strcpy(bak, tmp);
+        strcpy(bak + strlen(bak) - 3, "OLD");
+        remove(bak);
+        if (have_old && afs_rename(path, bak) != E_OK) {
             ar_log(o, "Cannot replace %s", path);
             remove(tmp);
             err = E_WRITE;
         } else if (afs_rename(tmp, path) != E_OK) {
             ar_log(o, "Cannot rename %s to %s", tmp, path);
+            if (have_old)
+                afs_rename(bak, path);
             err = E_WRITE;
-        }
+        } else if (have_old)
+            remove(bak);
     }
 out:
     arch_close(&old);

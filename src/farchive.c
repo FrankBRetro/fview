@@ -106,7 +106,7 @@ void alertf(const char *fmt, ...)
     char buf[256];
     va_list ap;
     va_start(ap, fmt);
-    vsprintf(buf, fmt, ap);
+    vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     form_alert(1, buf);
 }
@@ -447,7 +447,7 @@ static void log_add(const char *fmt, ...)
     va_list ap;
     int was_bottom = logtop >= lognum - log_visible();
     va_start(ap, fmt);
-    vsprintf(b, fmt, ap);
+    vsnprintf(b, sizeof b, fmt, ap);
     va_end(ap);
     strncpy(logl[lognum % LOGN], b, LOGW - 1);
     logl[lognum % LOGN][LOGW - 1] = 0;
@@ -480,11 +480,14 @@ typedef struct AWIN {
     long  top;
     int   anchor;                            /* last clicked row          */
     int   busy;                              /* a task is using it        */
+    int   stale;                             /* read it again (cancelled) */
+    long  serial;                            /* which window, for tasks   */
     char  title[80], info[100];
     GRECT full;
 } AWIN;
 
 static AWIN aw[MAXAW];
+static long aw_serial;
 
 #define AWK (NAME | CLOSER | MOVER | SIZER | FULLER | INFO | UPARROW | DNARROW | VSLIDE)
 
@@ -495,6 +498,13 @@ static AWIN *find_aw(int handle)
         if (aw[i].handle > 0 && aw[i].handle == handle)
             return &aw[i];
     return 0;
+}
+
+/* the window a task was for - not another one that got its handle */
+static AWIN *find_aw_task(int handle, long serial)
+{
+    AWIN *w = find_aw(handle);
+    return w && w->serial == serial ? w : 0;
 }
 
 static AWIN *find_aw_path(const char *path)
@@ -568,12 +578,34 @@ static void aw_set_info(AWIN *w)
     wind_set_str(w->handle, WF_INFO, w->info);
 }
 
+/* windows with a full redraw already on its way: one is enough (the
+   message queue is small, and a busy log would fill it)              */
+#define NPEND 12
+static short pend[NPEND];
+
+static void redraw_done(int h)
+{
+    int i;
+    for (i = 0; i < NPEND; i++)
+        if (pend[i] == h)
+            pend[i] = 0;
+}
+
 static void post_redraw_h(int h)
 {
     short msg[8];
     GRECT wk;
+    int i, free_slot = -1;
     if (h <= 0)
         return;
+    for (i = 0; i < NPEND; i++) {
+        if (pend[i] == h)
+            return;
+        if (!pend[i] && free_slot < 0)
+            free_slot = i;
+    }
+    if (free_slot >= 0)
+        pend[free_slot] = (short)h;
     wind_get_grect(h, WF_WORKXYWH, &wk);
     msg[0] = WM_REDRAW; msg[1] = ap_id; msg[2] = 0; msg[3] = h;
     msg[4] = wk.g_x; msg[5] = wk.g_y; msg[6] = wk.g_w; msg[7] = wk.g_h;
@@ -733,6 +765,7 @@ static void aw_take_list(AWIN *w, const u8 *b, long len)
 
 static void aw_close(AWIN *w)
 {
+    redraw_done(w->handle);
     if (w->handle > 0) {
         wind_close(w->handle);
         wind_delete(w->handle);
@@ -768,6 +801,7 @@ static AWIN *aw_open(const char *path, int fmt, int isnew)
     w->fmt = fmt;
     w->isnew = isnew;
     w->anchor = -1;
+    w->serial = ++aw_serial;
     wk.g_x = wk.g_y = 0;
     wk.g_w = 72 * cell_w;
     wk.g_h = 16 * cell_h + 8;
@@ -814,6 +848,7 @@ typedef struct {
     int   afmt;
     int   nitems;                            /* files being added         */
     int   handle;                            /* the archive's window      */
+    long  serial;                            /* ... and which one         */
 } TASK;
 
 static TASK *tasks;
@@ -846,7 +881,7 @@ static TASK *task_new(int op, const char *path)
 }
 
 /* a temporary list file next to the program (or in the destination) */
-static FILE *list_file(char *path)
+static FILE *list_file(char *path, const char *mode)
 {
     const char *dir = app_folder;
     FILE *f;
@@ -856,10 +891,10 @@ static FILE *list_file(char *path)
         if (!exists(path))
             break;
     }
-    f = fopen(path, "wb");
+    f = fopen(path, mode);
     if (!f && cs.dest[0]) {
         sprintf(path, "%sFARC%04d.LST", cs.dest, (list_seq++) % 10000);
-        f = fopen(path, "wb");
+        f = fopen(path, mode);
     }
     return f;
 }
@@ -880,8 +915,10 @@ static void extract_dest(const char *arc, char *out)
         /* the folder's name: 8.3 on FAT drives */
         if (cs.rename83 && !afs_long_names(cs.dest) && n > 8)
             stem[8] = 0;
-        strcat(out, stem);
-        strcat(out, "\\");
+        if (strlen(out) + strlen(stem) + 2 < 256) {
+            strcat(out, stem);
+            strcat(out, "\\");
+        }
     }
 }
 
@@ -897,9 +934,9 @@ static void queue_extract(const char *arc, AWIN *w, int selected)
         return;
     extract_dest(arc, t->out);
     if (w)
-        t->handle = w->handle;
+        t->handle = w->handle, t->serial = w->serial;
     if (w && selected && aw_count_sel(w)) {
-        FILE *f = list_file(t->list);
+        FILE *f = list_file(t->list, "w");
         int i;
         if (!f) {
             tn--;
@@ -907,7 +944,10 @@ static void queue_extract(const char *arc, AWIN *w, int selected)
             return;
         }
         for (i = 0; i < w->n; i++)
-            putc(w->e[i].sel, f);
+            if (w->e[i].sel) {
+                fputs(w->e[i].name, f);
+                fputs("\n", f);
+            }
         fclose(f);
         t->nitems = aw_count_sel(w);
     }
@@ -919,6 +959,7 @@ static void queue_list(AWIN *w)
     if (!t)
         return;
     t->handle = w->handle;
+    t->serial = w->serial;
     w->busy = 1;
     aw_set_info(w);
     begin();
@@ -938,8 +979,8 @@ static void queue_add(const char *arc, int afmt, char **names, int n, AWIN *w)
     t->afmt = afmt;
     t->nitems = n;
     if (w)
-        t->handle = w->handle;
-    f = list_file(t->list);
+        t->handle = w->handle, t->serial = w->serial;
+    f = list_file(t->list, "w");
     if (!f) {
         tn--;
         log_add("Cannot write a list file next to FArchive");
@@ -1081,6 +1122,7 @@ static void dlg_close(void)
         wind_delete(pdlg);
     }
     pdlg = 0;
+    fa_menu_update();                        /* another window is on top now */
 }
 
 static const char *op_verb(int op)
@@ -1143,6 +1185,8 @@ static void finish_all(void)
             secs(now_ms() - batch_t0, t));
     cur = 0;
     strcpy(t_btn, "OK");
+    ptree[P_BTN].ob_state &= ~SELECTED;
+    fa_menu_update();
     strcpy(t_file, "");
     set_total_text();
     set_stat_text(100);
@@ -1159,6 +1203,8 @@ static void start_next(void)
         JOB *j = calloc(1, sizeof(JOB));
         if (!j) {
             n_tfail++;
+            if (t->list[0])
+                Fdelete(t->list);
             tpos++;
             continue;
         }
@@ -1190,6 +1236,8 @@ static void start_next(void)
             free(j);
             cur = 0;
             n_tfail++;
+            if (t->list[0])
+                Fdelete(t->list);
             tpos++;
             continue;
         }
@@ -1202,7 +1250,7 @@ static void start_next(void)
 void win_job_finished(VWIN *vw, JOB *j)
 {
     TASK *t = tpos < tn ? &tasks[tpos] : 0;
-    AWIN *w = t ? find_aw(t->handle) : 0;
+    AWIN *w = t ? find_aw_task(t->handle, t->serial) : 0;
     char tm[24];
     (void)vw;
     if (j->res.err == E_CANCEL || j->cancel) {
@@ -1244,12 +1292,16 @@ void win_job_finished(VWIN *vw, JOB *j)
     }
     if (t && t->list[0])
         Fdelete(t->list);
-    /* the archive changed: read it again */
-    if (j->q.op == OP_ARC_ADD && !j->res.err) {
+    /* the archive (may have) changed: read it again - now, or when the
+       cancelled batch's dialog is closed                              */
+    if (j->q.op == OP_ARC_ADD) {
         AWIN *aw2 = find_aw_path(j->q.path);
         if (aw2) {
-            aw2->isnew = 0;
-            queue_list(aw2);
+            if (!j->res.err && !j->cancel && !cancelling) {
+                aw2->isnew = 0;
+                queue_list(aw2);
+            } else
+                aw2->stale = 1;
         }
     }
     if (cur == j)
@@ -1259,7 +1311,7 @@ void win_job_finished(VWIN *vw, JOB *j)
     if (cancelling) {
         int k;
         for (k = tpos; k < tn; k++) {
-            AWIN *x = find_aw(tasks[k].handle);
+            AWIN *x = find_aw_task(tasks[k].handle, tasks[k].serial);
             if (tasks[k].list[0])
                 Fdelete(tasks[k].list);
             if (x) {
@@ -1358,6 +1410,10 @@ static int choose_dest(void)
     if (!s)
         return 0;
     s[1] = 0;
+    if (strlen(path) >= sizeof cs.dest - 1) {
+        alertf("[1][FArchive: that folder's path|is too long.][ OK ]");
+        return 0;
+    }
     strcpy(cs.dest, path);
     settings_save();
     return 1;
@@ -1414,9 +1470,18 @@ static void begin(void)
 static void dlg_button(void)
 {
     if (finished) {
+        int i;
         dlg_close();
         finished = 0;
         tn = tpos = 0;
+        for (i = 0; i < MAXAW; i++)
+            if (aw[i].handle > 0 && aw[i].stale) {
+                aw[i].stale = 0;
+                if (exists(aw[i].path)) {
+                    aw[i].isnew = 0;
+                    queue_list(&aw[i]);
+                }
+            }
     } else
         cancel_all();
 }
@@ -1779,6 +1844,7 @@ static void icon_rect(GRECT *r)
 /* (re)create the main window with the given gadgets */
 static void make_window(int kind, GRECT *r, const char *title)
 {
+    redraw_done(mainw);
     if (mainw > 0) {
         wind_close(mainw);
         wind_delete(mainw);
@@ -2090,8 +2156,16 @@ static void drag_drop(short *msg)
         if (Fread((short)fd, 2, &hlen) != 2 || hlen < 8)
             break;
         if (hlen > (short)sizeof hdr) {
+            /* a pipe cannot seek: read the rest and drop it */
+            long left = hlen - (long)sizeof hdr;
             Fread((short)fd, sizeof hdr, hdr);
-            Fseek(hlen - sizeof hdr, (short)fd, 1);
+            while (left > 0) {
+                char junk[64];
+                long k = left > 64 ? 64 : left;
+                if (Fread((short)fd, k, junk) != k)
+                    break;
+                left -= k;
+            }
         } else
             Fread((short)fd, hlen, hdr);
         memcpy(type, hdr, 4);
@@ -2184,7 +2258,7 @@ static void aw_message(AWIN *w, short *msg)
 {
     GRECT *r = (GRECT *)&msg[4];
     switch (msg[0]) {
-    case WM_REDRAW:  aw_redraw(w, r); break;
+    case WM_REDRAW:  redraw_done(w->handle); aw_redraw(w, r); break;
     case WM_TOPPED:  wind_set(w->handle, WF_TOP, 0, 0, 0, 0); fa_menu_update(); break;
     case WM_CLOSED:  aw_close(w); break;
     case WM_MOVED:   wind_set_grect(w->handle, WF_CURRXYWH, r); w->full = *r; break;
@@ -2259,7 +2333,7 @@ static void message(short *msg)
     if (mainw <= 0 || msg[3] != mainw)
         return;
     switch (msg[0]) {
-    case WM_REDRAW:  main_redraw(r); break;
+    case WM_REDRAW:  redraw_done(mainw); main_redraw(r); break;
     case WM_TOPPED:  wind_set(mainw, WF_TOP, 0, 0, 0, 0); fa_menu_update(); break;
     case WM_MOVED:
         wind_set_grect(mainw, WF_CURRXYWH, r);
@@ -2448,6 +2522,8 @@ int gui_coop_poll(void)
         return 0;
     in = 1;
     events(0L, 1);
+    if (quitting && cur && !cur->cancel)
+        job_cancel(cur);                     /* Quit during a TOS job */
     job_poll();
     in = 0;
     return 0;
@@ -2557,6 +2633,9 @@ int main(int argc, char **argv)
     if (cur)
         job_cancel(cur);
     job_kill_all();
+    for (i = tpos; i < tn; i++)              /* tasks never started */
+        if (tasks[i].list[0])
+            Fdelete(tasks[i].list);
     dlg_close();
     for (i = 0; i < MAXAW; i++)
         if (aw[i].handle > 0)

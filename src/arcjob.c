@@ -3,7 +3,8 @@
  * Linked into farchive.prg (cooperative jobs under TOS) and fawork.ttp
  * (the background worker under MiNT). No GEM calls in here.
  *
- * A listing comes back in RB_DOC:
+ * Extracting some members: q->list names a file with their names, one
+ * a line. A listing comes back in RB_DOC:
  *   "FAL1", fmt (2), count (4), totals usize, csize (4 + 4), then per
  *   member: usize, csize, dostime (4 each), flags (1: 1 folder, 2 not
  *   supported, 4 merged group), method name (8), name length (1), name.
@@ -99,11 +100,23 @@ static int do_extract(JOBREQ *q, JOBRES *r, PROG *pg)
         arch_close(&a);
         return e;
     }
-    if (q->list[0]) {                  /* one byte per member, 1 = take it */
-        FILE *f = fopen(q->list, "rb");
+    if (q->list[0]) {                  /* the members to take, one a line */
+        FILE *f = fopen(q->list, "r");
+        char line[260];
+        int i, k = 0;
         sel = calloc(1, a.n + 1);
-        if (f && sel)
-            fread(sel, 1, a.n, f);
+        while (f && sel && fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\r\n")] = 0;
+            /* in listing order, so the next match is usually the next one */
+            for (i = 0; i < a.n; i++) {
+                int j = (k + i) % a.n;
+                if (!sel[j] && !strcmp(a.e[j].name, line)) {
+                    sel[j] = 1;
+                    k = j + 1;
+                    break;
+                }
+            }
+        }
         if (f)
             fclose(f);
     }

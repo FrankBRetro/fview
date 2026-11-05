@@ -319,6 +319,8 @@ int lha_list(ARCH *a, FILE *f)
         if (level == 0 || level == 1) {
             int nl;
             hs = h[0] + 2;
+            if (hs < 24)
+                return a->n ? E_OK : E_FORMAT;
             if (fread(h + 22, 1, hs - 22, f) != (size_t)(hs - 22))
                 return a->n ? E_OK : E_FORMAT;
             e.dostime = (u32)g16(h + 17) << 16 | g16(h + 15);

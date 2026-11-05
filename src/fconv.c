@@ -797,6 +797,7 @@ static void finish_all(void)
             n_ok, n_fail, n_skip, secs(now_ms() - batch_t0, t));
     cur = 0;
     strcpy(t_btn, "OK");
+    ptree[P_BTN].ob_state &= ~SELECTED;
     strcpy(t_file, "");
     set_total_text();
     set_stat_text(100);
@@ -1478,8 +1479,16 @@ static void drag_drop(short *msg)
         if (Fread((short)fd, 2, &hlen) != 2 || hlen < 8)
             break;
         if (hlen > (short)sizeof hdr) {
+            /* a pipe cannot seek: read the rest and drop it */
+            long left = hlen - (long)sizeof hdr;
             Fread((short)fd, sizeof hdr, hdr);
-            Fseek(hlen - sizeof hdr, (short)fd, 1);
+            while (left > 0) {
+                char junk[64];
+                long k = left > 64 ? 64 : left;
+                if (Fread((short)fd, k, junk) != k)
+                    break;
+                left -= k;
+            }
         } else
             Fread((short)fd, hlen, hdr);
         memcpy(type, hdr, 4);

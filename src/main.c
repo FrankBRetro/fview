@@ -604,8 +604,16 @@ static void drag_drop(short *msg)
         if (Fread((short)fd, 2, &hlen) != 2 || hlen < 8)
             break;
         if (hlen > (short)sizeof hdr) {
+            /* a pipe cannot seek: read the rest and drop it */
+            long left = hlen - (long)sizeof hdr;
             Fread((short)fd, sizeof hdr, hdr);
-            Fseek(hlen - sizeof hdr, (short)fd, 1);
+            while (left > 0) {
+                char junk[64];
+                long k = left > 64 ? 64 : left;
+                if (Fread((short)fd, k, junk) != k)
+                    break;
+                left -= k;
+            }
         } else
             Fread((short)fd, hlen, hdr);
         memcpy(type, hdr, 4);
