@@ -1,4 +1,4 @@
-# FView 1.5 — GEM file viewer, FConv picture converter and FArchive archiver for TOS, MultiTOS and MiNT
+# FView 1.5 — GEM file viewer and FConv picture converter for TOS, MultiTOS and MiNT
 
 FView (`fview.prg`) starts with its menu bar and an **iconified main window**. Drop files
 on it (or on any fview window) from the desktop, open them with **File ›
@@ -46,12 +46,11 @@ make VARIANTS=000       # only the 68000 builds (or 030, 030fpu, 040, cf)
 | 68040 | `release/040/`, `log/040/` | 68040 machines and accelerators with the full 68040 (built-in FPU; not a 68LC040) |
 | ColdFire | `release/cf/`, `log/cf/` | FireBee (ColdFire V4e with FPU) |
 
-Each folder holds `fview.prg`, `fconv.prg` and `fvwork.ttp`, and
-`farchive.prg` with `fawork.ttp` — **copy the programs of one build into
-the same folder** (`fvwork.ttp` is the MiNT background worker FView and
-FConv use, `fawork.ttp` FArchive's; without them the programs still work,
-cooperatively). The log builds write `FVIEW.LOG` / `FCONV.LOG` /
-`FARCHIVE.LOG` next to the program, see *Step log*. Do not build with `-mshort`. No resource file is
+Each folder holds `fview.prg`, `fconv.prg` and `fvwork.ttp` — **copy all
+three of one build into the same folder** (`fvwork.ttp` is the MiNT
+background worker both programs use; without it they still work,
+cooperatively). The log builds write `FVIEW.LOG` / `FCONV.LOG` next to the
+program, see *Step log*. Do not build with `-mshort`. No resource file is
 needed — menus, dialogs and icons are built at run time. PNG/JPEG decoding
 uses `stb_image.h` (public domain, included in `src/`).
 
@@ -88,60 +87,6 @@ dropped on their own).
 - Open the icon to see the **log**: every file converted with the time it
   took, failures and a summary per batch (scrollable, last 200 lines). The
   same lines are appended to `FCONV.TXT` in the destination folder.
-
-## FArchive — archiver
-
-`farchive.prg` extracts and makes archives in **ZIP, LHA (.LZH), ZOO, ARC,
-LZX, TAR, TAR.GZ (.TGZ) and GZ**. It works like FConv: it starts as an
-icon (next to FConv's), takes drops the MultiTOS way (AP_DRAGDROP) and the
-AV way (VA_DRAGACCWIND), VA_START and the command line, opens into the
-same log window and shows the same non-modal progress dialog (all tasks,
-the current task with the member being done, Cancel). Under MiNT each task
-runs in its own `fawork.ttp` at nice 19; on TOS it runs inside FArchive.
-
-- **Drop archives on the icon** to extract them into the destination
-  folder (each into a folder of its own with *Folder per archive*), or —
-  with *Options › Extract dropped archives* off — to open each in a window.
-- **Drop other files or folders on the icon** to pack them into a new
-  archive: FArchive asks for its name (the extension says the format; the
-  *Format* menu gives the one for new archives).
-- **Archive windows** (*File › Open archive...*, or *New archive...* for an
-  empty one) list the members with size, packed size, method and date.
-  Click to select, Shift-click to add or take away one, Control-click for
-  everything from the last click; *File › Extract selected* (^X, nothing
-  selected = all) or double-click a member to extract it. **Files and
-  folders dropped on an archive window are added to it**, as is what
-  *File › Add files...* picks (no name in the file selector = the folder).
-  Members of the same name are replaced when *Replace existing files* is on.
-- **8.3 names**: extracting to a FAT drive (TOS, or MiNT's FAT file
-  systems — checked per drive with `Dpathconf`), member and folder names
-  that are not valid 8.3 names are renamed (`Long File Name.txt` →
-  `LONGFI~1.TXT`, clashes get `~2`, `~3`...) and each rename is listed in
-  the log. Drives with long names (ext2, MinixFS...) get the names as they
-  are. *Options › 8.3 names on FAT drives* switches this off.
-- Paths in archives are made safe: drive letters and `..` are dropped.
-  *Keep folders* off extracts everything flat into one folder.
-- **The log** lists every task with what was extracted, added, skipped
-  (already there and *Replace* off, links, unknown methods), renamed or
-  failed (with CRC errors), and a summary per batch. It is also appended to
-  `FARCHIVE.TXT` in the destination folder — **only on a hard disk**: when
-  the destination is on A: or B: it goes next to the program instead, and
-  when that is a floppy too, no log file is written.
-- Settings are kept in `FARCHIVE.INF` next to the program.
-
-| Format | Reads | Writes |
-|---|---|---|
-| ZIP | stored, deflate | deflate (stored for folders and empty files) |
-| GZ, TAR.GZ | deflate, several members | deflate (*Best compression*: slower, a little smaller) |
-| TAR | ustar, GNU long names, pax paths | ustar with GNU long names |
-| LHA | -lh0- -lh1- -lh4- -lh5- -lh6- -lh7- -lzs- -lz4- -lz5- -lhd-, header levels 0–3 | -lh5- (level 1 headers, Atari LHarc style paths), -lh0- when it does not shrink |
-| ZOO | stored, LZW, lh5 | LZW, stored when it does not shrink |
-| ARC | stored, packed, squeezed, crunched (5–8), squashed | crunched (method 8), stored when it does not shrink; no folders (8.3 names) |
-| LZX | stored, LZX (verbatim and aligned blocks, merged groups) | LZX, 64K window |
-
-A GZ file holds a single file; use TAR.GZ for more. Adding to an archive
-writes a new one next to it (`FARC$$$$.TMP`) and then replaces it, so
-there must be room for both.
 
 ## Using it
 
@@ -266,10 +211,7 @@ folder. `make release` or `make log` builds just one of them.
 | `worker.c`, `jobcore.c` | the worker program (`fvwork.ttp`, `fawork.ttp`), result memory and the step log |
 | `jobexec.c` | what an FView / FConv job does |
 | `fconv.c` | FConv |
-| `farchive.c`, `arcjob.c` | FArchive's GUI, and what its jobs do |
-| `archive.c`, `arcfmt.c`, `arcfs.c` | archive formats: listing, extracting (8.3 names), adding; TAR/GZ in `archive.c` |
-| `arcio.c`, `codecs.c` | byte and bit streams, CRCs, Huffman codes; which codec a method uses |
-| `deflate.c`, `inflate.c`, `lzh.c`, `lzw.c`, `lzx.c` | the codecs: deflate, LHA's lh1–lh7/lzs/lz5, ZOO and ARC's LZW/RLE/squeeze, Amiga LZX |
+| `pdf_save.c`, `deflate.c`, `arcio.c` | FConv's PDF writer and its deflate compressor (shared with FArchive) |
 | `print.c`, `prefs.c`, `tree.c` | GDOS printing, preferences, run-time object trees |
 | `dec_*.c`, `dither.c`, `img_save.c` | decoders, quantiser/ditherer, IMG writer (no GEM code) |
 
@@ -282,12 +224,6 @@ No Atari toolchain or emulator was available where this was written, so:
   16-bit depths, lossless IMG round trips (original and dithered), and the
   text/PDF renderers through a stub VDI, including a 33-page LaTeX PDF and
   a PDF using compressed object streams. Run under AddressSanitizer.
-- **FArchive's archive layer tested on a host** (`make arctest`): archives
-  it wrote were checked with Info-ZIP `unzip -t`, GNU tar and gzip, lhasa,
-  ZOO 2.10, ARC 5.21 and an LZX extractor; archives from those tools (and
-  lhasa's test archives from about 30 LHA programs, Atari LHarc 3.13
-  included) extracted byte for byte; 8.3 renaming checked with a forced
-  FAT mode. ARC's old methods 5–7 have no test files.
 - **Type-checked for the 68000** against the real mintlib and gemlib
   headers (clang M68k backend, `-Wall`, no warnings).
 - **Not yet run on TOS/MiNT.** Worth watching on first runs:
@@ -300,6 +236,9 @@ Known limits: PNG decoding reports progress while reading but not during
 decompression; PDF text is drawn in a GDOS font of the right family (or the
 system font) fitted to each run's width, not in the embedded fonts;
 encrypted PDFs, rotated images and shadings aren't shown.
+
+FArchive, the archiver that grew out of FConv, is its own project:
+<https://github.com/FrankBRetro/farchive>.
 
 ## Licence
 
