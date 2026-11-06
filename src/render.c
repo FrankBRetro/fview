@@ -179,7 +179,8 @@ static int rich_escape(const u8 *t, long i, long n, RSTATE *s)
 }
 #define IS_ESC(c) ((c) == TA_MARK || (c) == FM_FONT || (c) == FM_COLOR)
 
-static long rich_layout(const u8 *blob, TXTDEV *td, int width_px, TLINE **out)
+static long rich_layout(const u8 *blob, TXTDEV *td, int width_px, TLINE **out,
+                        PROG *pg)
 {
     RICH r;
     long np = rd_u32(blob + 4), o, p, n = 0, cap = np + 64, y = 0, avail;
@@ -338,6 +339,10 @@ static long rich_layout(const u8 *blob, TXTDEV *td, int width_px, TLINE **out)
         EMIT(plen, 1);
 #undef EMIT
         o += 4 + plen;
+        if ((p & 63) == 0 && prog_step(pg, p, np)) {
+            free(L);
+            return -1;
+        }
     }
     *out = L;
     return n;
@@ -417,7 +422,7 @@ long txt_layout(const u8 *blob, long len, TXTDEV *td, int width_px,
                 TLINE **out, PROG *pg)
 {
     if (txt_is_rich(blob))
-        return rich_layout(blob, td, width_px, out);
+        return rich_layout(blob, td, width_px, out, pg);
     {
     long np = rd_u32(blob + 4), flags = rd_u32(blob + 8), o = 12, p;
     long cap = np + 64, n = 0, y = 0;
@@ -497,7 +502,7 @@ long txt_layout(const u8 *blob, long len, TXTDEV *td, int width_px,
             first = 0;
         } while (pos < plen);
         o += 4 + plen;
-        if ((p & 255) == 0 && prog_step(pg, p, np)) {
+        if ((p & 63) == 0 && prog_step(pg, p, np)) {
             free(L);
             return -1;
         }

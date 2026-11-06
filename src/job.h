@@ -5,7 +5,20 @@
 
 #include "fview.h"
 
-enum { OP_LOAD = 1, OP_RENDER, OP_CONVERT, OP_ARC_LIST, OP_ARC_EXTRACT, OP_ARC_ADD };
+enum { OP_LOAD = 1, OP_RENDER, OP_CONVERT, OP_ARC_LIST, OP_ARC_EXTRACT, OP_ARC_ADD,
+       /* FView's picture tools: each works on q->src (the window's copy)
+          and, but for OP_COUNT and OP_SHAREPAL, makes a new copy in
+          RB_ORIG and renders it like OP_LOAD                          */
+       OP_DUP,                   /* a copy of src                        */
+       OP_REDUCE,                /* src in ncol colours, or mapped onto
+                                    xpal when xpal_n > 0                 */
+       OP_RESIZE,                /* src at nw x nh                       */
+       OP_COUNT,                 /* acount[0] real colours, [1] seen on
+                                    the screen, [2] palette entries used */
+       OP_SHAREPAL };            /* one palette for the pictures listed
+                                    in list (SPREC records) -> pal       */
+/* the jobs that read q->src, so a worker must attach src_shm          */
+#define OP_USES_SRC(op) ((op) == OP_RENDER || ((op) >= OP_DUP && (op) <= OP_COUNT))
 enum { K_NONE = 0, K_IMAGE, K_TEXT, K_PDF, K_MAIN, K_ARCLIST };
 
 typedef struct {
@@ -20,7 +33,9 @@ typedef struct {
     char  attached[RB_MAX];      /* block is attached shared memory      */
     long  size[RB_MAX];
     u8   *ptr[RB_MAX];           /* addresses in the GUI process         */
-    long  acount[4];             /* FArchive: ok, failed, skipped, renamed */
+    long  acount[4];             /* FArchive: ok, failed, skipped, renamed;
+                                    OP_COUNT: real, seen, entries used     */
+    int   rdither;               /* the dithering the render used         */
 } JOBRES;
 
 /* The request part of a job: this is what is sent to the worker. */
@@ -42,7 +57,19 @@ typedef struct {
     int   afmt;                  /* AF_* for a new archive               */
     int   aflags;                /* AJ_* below                           */
     char  list[256];             /* file of names (add) / selection (extract) */
+    /* FView picture tools                                                */
+    int   ncol;                  /* OP_REDUCE: colours                    */
+    int   xpal_n;                /* OP_REDUCE: map onto these instead     */
+    u8    xpal[256 * 3];
+    long  nw, nh;                /* OP_RESIZE                             */
+    int   smooth;                /* OP_RESIZE: average / blend            */
 } JOBREQ;
+
+/* OP_SHAREPAL: q->list names a file of these, one per picture          */
+typedef struct {
+    IMAGE im;                    /* header (px valid in the GUI process)  */
+    char  shm[14];               /* its shared memory, "" if none         */
+} SPREC;
 enum { AJ_REPLACE = 1, AJ_RENAME83 = 2, AJ_SUBDIRS = 4, AJ_PATHS = 8, AJ_FAST = 16, AJ_BEST = 32 };
 
 typedef struct JOB {
@@ -80,6 +107,7 @@ int   job_exec(JOBREQ *q, JOBRES *r, PROG *pg);
 void  job_note(int kind, const char *text);
 extern void (*job_note_hook)(int kind, const char *text);
 void  res_set_shared(int on);    /* worker: results in U:\SHM          */
+int   res_is_shared(void);        /* running in a worker                 */
 void  res_collect(JOBRES *r);    /* hand allocated blocks to a result   */
 void  res_free_all(void);
 void  shm_path(char *buf, const char *name);

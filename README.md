@@ -1,4 +1,4 @@
-# FView 1.5 — GEM file viewer and FConv picture converter for TOS, MultiTOS and MiNT
+# FView 1.7 — GEM file viewer and FConv picture converter for TOS, MultiTOS and MiNT
 
 FView (`fview.prg`) starts with its menu bar and an **iconified main window**. Drop files
 on it (or on any fview window) from the desktop, open them with **File ›
@@ -93,8 +93,14 @@ dropped on their own).
 | Key | Action |
 |---|---|
 | ^O / ^U / ^Q | Open, close window, quit |
-| ^S / ^D | Save as IMG at original depth / as displayed (dithered) |
-| ^P | Print (GDOS) |
+| ^S / Shift+^S | Save as IMG at original depth / as shown (dithered) |
+| ^P | Print (GDOS), with progress and Cancel |
+| ^D | Duplicate the picture into a new window |
+| ^T | Dithering window for the top picture |
+| ^K / ^R | Reduce colours / resize to a pixel size |
+| ^I | Count colours (real and as seen) |
+| ^L / Shift+^L | Load / save a palette |
+| ^G | Share one palette between all pictures (on/off) |
 | ^1 / ^2, double-click | Real size (PDF: 100%) / fit to window (PDF: fit width) |
 | `+` / `-` | PDF zoom in / out (50% to 400%) |
 | ^B / ^N, Clr/Home, Shift+Clr/Home | PDF previous / next / first / last page |
@@ -146,12 +152,61 @@ dropped on their own).
   `vr_trnfm`), and where the red, green and blue bits sit in true colour,
   including byte-swapped (Intel order) 15/16-bit modes. What the driver
   reports is only used if this check can't run. The log build records both.
+- **Picture menu** (all tools run as jobs with a progress panel and
+  Cancel; the window stays movable and other windows usable):
+  - *Duplicate* (^D) copies the picture in memory into a new window,
+    titled "(copy N)", with its own dithering settings.
+  - *Dithering...* (^T) opens a non-modal window for the top picture:
+    dither method, serpentine, smooth shrink, its own or the system
+    palette. *Apply* re-renders that window only, always from the
+    original pixels kept in memory, so each window (and each duplicate)
+    can try different settings. Windows you haven't changed follow
+    Preferences.
+  - *Reduce colours...* (^K) picks the picture's best 2–256 colours
+    (median cut) and remaps it onto them with the window's dithering; the
+    result becomes the window's new original (duplicate first to keep the
+    old one).
+  - *Resize...* (^R) to a width and height in pixels, optionally keeping
+    the proportions; paletted pictures scale by nearest pixel, true colour
+    ones are averaged when shrinking and blended when enlarging (*Smooth*).
+    Big results ask first.
+  - *Count colours* (^I): the different 24-bit colours the picture really
+    uses (and how many palette entries, for paletted pictures), and the
+    colours the eye sees on this screen with the current dithering (each
+    2×2 block of the dithered output averaged). Also shown on the info
+    line and in the Dithering window.
+  - *Load palette...* (^L) reads JASC-PAL (`.PAL`), GIMP (`.GPL`), Adobe
+    colour tables (`.ACT`, 768/772 bytes), raw RGB triples, Atari hardware
+    palettes (16 words) and the palette of Degas (`.PI1-3`, `.PC1-3`) and
+    NEOchrome files. For a paletted picture it asks *Replace* (use the new
+    colours for the same pixel values) or *Map* (remap the pixels onto the
+    new palette with dithering). *Save palette...* (Shift+^L) writes `.ACT`,
+    `.GPL`, or JASC-PAL for any other extension.
+  - *Share one palette* (^G, ticked when on) on palette screens builds one
+    palette from all open pictures and shows them all with it, so they
+    look right side by side and nothing flickers when windows are topped.
+    It is rebuilt when pictures are opened, closed, reduced or resized.
+- **Paletted pictures on 256-colour or high-colour screens** are shown
+  without dithering by default, since their colours already fit (the
+  palette maps straight through). Preferences › *Paletted pics: Dither
+  them on 256+ colour screens* turns dithering back on; the Dithering
+  window can change it per window.
+- **Legible menus with any palette**: picture palettes never change pens
+  0 and 1 (white and black), nor pens 8 and 9 on 3D AES screens with 16 or
+  more colours, so menus, window frames and dialogs stay readable whatever
+  palette a picture or a palette file brings.
+- **Long text**: laying out a large text file (over about 24 KB) after a
+  window resize runs with a progress panel and can be cancelled, instead
+  of freezing the desktop.
 - **Saving**: *original* keeps the source depth (1/2/4/8-plane XIMG with
   palette, or 24-bit); *dithered* saves exactly what is on screen.
 - **Printing**: needs a GDOS (GDOS, AMCGDOS, NVDI, SpeedoGDOS) with a
   printer driver on device 21 in `ASSIGN.SYS`. Pictures are dithered at
   printer resolution (fit to page or real size); text is laid out with the
   printer's system font; PDFs print the current page or all pages.
+  Printing shows a progress panel with Cancel and the desktop stays usable;
+  only the GDOS call that sends a finished page to the printer
+  (`v_updwk`) can't be interrupted, and the panel says so while it runs.
 
 - **Fonts**: with a GDOS (SpeedoGDOS, NVDI, FontGDOS...) fview loads its
   fonts at start. RTF documents are laid out in their own fonts and sizes:
@@ -190,7 +245,7 @@ MiNT workers, dither method and serpentine, opening zoom, smooth shrink,
 per-picture/system palette, keep GEM colours, transparency background,
 GIF transparency, PNG alpha, IFF mask and HAM/EHB, IMG system palette and
 XIMG pen order, JPEG grey on mono, tab width, wrapping, 8-bit text charset,
-Markdown markup, RTF pictures, PDF zoom/graphics/image boxes, and print
+Markdown markup, RTF pictures, PDF zoom/graphics/image boxes, dithering of paletted pictures on 256+ colour screens, and print
 size/dither/header. Format options apply to files opened afterwards.
 
 ## Step log
@@ -205,11 +260,13 @@ folder. `make release` or `make log` builds just one of them.
 | File | |
 |---|---|
 | `main.c` | start-up, menus, event loop, drag & drop (`AP_DRAGDROP`), `VA_START`, keys, busy pointer |
-| `win.c` | document windows, progress panel, scrolling, palettes, zoom, saving |
+| `win.c` | document windows, progress panel, scrolling, palettes, zoom, saving, picture tools, shared palette |
+| `picdlg.c` | Dithering window, Reduce colours and Resize dialogs |
+| `palette.c` | palette files, colour reduction, remapping, resizing, colour counts, shared palettes (no GEM code) |
 | `render.c` | text layout and PDF drawing, shared by screen and printer |
 | `job.c` | starting/polling `fvwork.ttp` workers (Pexec, pipes, `U:\SHM`) and cooperative TOS jobs |
 | `worker.c`, `jobcore.c` | the worker program (`fvwork.ttp`, `fawork.ttp`), result memory and the step log |
-| `jobexec.c` | what an FView / FConv job does |
+| `jobexec.c` | what an FView / FConv job does (load, render, save, duplicate, reduce, resize, count, shared palette) |
 | `fconv.c` | FConv |
 | `pdf_save.c`, `deflate.c`, `arcio.c` | FConv's PDF writer and its deflate compressor (shared with FArchive) |
 | `print.c`, `prefs.c`, `tree.c` | GDOS printing, preferences, run-time object trees |
@@ -219,11 +276,13 @@ folder. `make release` or `make log` builds just one of them.
 
 No Atari toolchain or emulator was available where this was written, so:
 
-- **Tested on a host** (`make hosttest`, `make rendertest GEMINC=…`): every
+- **Tested on a host** (`make hosttest`, `make paltest`, `make rendertest GEMINC=…`): every
   decoder against sample files of each format, dithering at 1, 2, 4, 8 and
   16-bit depths, lossless IMG round trips (original and dithered), and the
   text/PDF renderers through a stub VDI, including a 33-page LaTeX PDF and
-  a PDF using compressed object streams. Run under AddressSanitizer.
+  a PDF using compressed object streams. `paltest` checks colour counts,
+  reduction, palette file round trips (JASC, ACT, GPL) and shared palettes.
+  Run under AddressSanitizer.
 - **Type-checked for the 68000** against the real mintlib and gemlib
   headers (clang M68k backend, `-Wall`, no warnings).
 - **Not yet run on TOS/MiNT.** Worth watching on first runs:

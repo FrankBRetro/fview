@@ -21,6 +21,7 @@ static const PKEY keys[] = {
     K(iff_mask), K(iff_ham), K(img_syspal), K(img_vdiorder), K(jpg_grey_mono),
     K(tabw), K(wrap), K(charset), K(md_markup), K(rtf_pict), K(pdf_zoom),
     K(pdf_gfx), K(pdf_imgbox), K(prt_scale), K(prt_dither), K(prt_header),
+    K(dither_pal),
     { 0, 0 }
 };
 

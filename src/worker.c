@@ -128,7 +128,7 @@ int main(void)
     pg.fn = prog;
     job_note_hook = note;
     res_set_shared(1);
-    if (req.op == OP_RENDER) {
+    if (OP_USES_SRC(req.op)) {
         req.src.px = req.src_shm[0] ? shm_attach(req.src_shm, 0) : 0;
         if (!req.src.px) {
             res.err = E_NOMEM;

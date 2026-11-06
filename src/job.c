@@ -292,10 +292,12 @@ int job_start(JOB *j)
         }
     if (i == MAXJOBS)
         return 0;
-    /* a re-render can only go to a worker when the original picture is
-       in shared memory the worker can attach */
+    /* a re-render or picture tool can only go to a worker when the
+       picture is in shared memory the worker can attach (OP_SHAREPAL:
+       src_shm is set when all of its pictures are)                   */
     if (have_worker && prefs.use_workers &&
-        (j->q.op != OP_RENDER || j->q.src_shm[0]) && start_worker(j))
+        ((!OP_USES_SRC(j->q.op) && j->q.op != OP_SHAREPAL) || j->q.src_shm[0]) &&
+        start_worker(j))
         return 1;
     j->queued = 1;
     return 1;

@@ -41,12 +41,13 @@ DIR_040    = /040
 DIR_cf     = /cf
 
 # shared by FView, FConv and their background worker
-CORE = jobcore.c jobexec.c util.c rd.c dither.c img_save.c convert.c pdf_save.c \
+CORE = jobcore.c jobexec.c util.c rd.c dither.c palette.c img_save.c convert.c pdf_save.c \
        arcio.c deflate.c dec_st.c dec_gem.c dec_gif.c dec_iff.c dec_bmp.c dec_img.c \
        dec_stb.c dec_text.c dec_pdf.c
-GUI  = main.c win.c render.c fonts.c job.c print.c prefs.c tree.c
+GUI  = main.c win.c render.c fonts.c job.c print.c prefs.c tree.c picdlg.c
 CONV = fconv.c job.c
-HDRS = src/fview.h src/gemui.h src/job.h src/doc.h src/rd.h src/arcio.h src/deflate.h
+HDRS = src/fview.h src/gemui.h src/job.h src/doc.h src/rd.h src/arcio.h src/deflate.h \
+       src/palette.h
 
 # one build: $(1) variant, $(2) rel|log, $(3) FV_LOG value, $(4) release|log
 define BUILD
@@ -81,7 +82,7 @@ $(foreach v,$(VARIANTS),$(eval $(call BUILD,$(v),log,1,log)))
 # (needs a native gcc; gemlib headers for rendertest: GEMINC=path)
 HOSTSRC = src/util.c src/rd.c src/dither.c src/dec_gif.c src/dec_iff.c src/dec_bmp.c \
           src/dec_img.c src/dec_stb.c src/dec_text.c src/dec_pdf.c src/img_save.c \
-          src/dec_st.c src/dec_gem.c src/convert.c src/pdf_save.c src/arcio.c src/deflate.c
+          src/dec_st.c src/dec_gem.c src/convert.c src/pdf_save.c src/arcio.c src/deflate.c src/palette.c
 hosttest: test/hosttest.c $(HOSTSRC)
 	gcc -O1 -g -o test/hosttest test/hosttest.c $(HOSTSRC) -lm
 convtest: test/convtest.c $(HOSTSRC)
@@ -90,7 +91,11 @@ rendertest: test/rendertest.c test/vdistub.c src/render.c $(HOSTSRC)
 	gcc -O1 -g -I$(GEMINC) -o test/rendertest test/rendertest.c test/vdistub.c \
 	    src/render.c $(HOSTSRC) -lm
 
-clean:
-	rm -rf build release log test/hosttest test/rendertest test/convtest
+# host test of the picture tools (palette.c)
+paltest: test/paltest.c src/palette.c src/dither.c src/util.c
+	gcc -O1 -g -Isrc -o test/paltest test/paltest.c src/palette.c src/dither.c src/util.c
 
-.PHONY: all release log clean hosttest rendertest convtest
+clean:
+	rm -rf build release log test/hosttest test/rendertest test/convtest test/paltest
+
+.PHONY: all release log clean hosttest rendertest convtest paltest

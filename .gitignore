@@ -8,3 +8,4 @@ test/convtest
 *.bak
 .DS_Store
 test/arctest
+test/paltest

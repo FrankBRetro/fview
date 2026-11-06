@@ -95,6 +95,12 @@ typedef struct VWIN {
     int    zoom;                 /* ZOOM_REAL / ZOOM_FIT                */
     int    haspal;
     u8     pal[256 * 3];
+    PREFS  wpf;                  /* this window's dithering and palette  */
+    int    wpf_own;              /* set in its Dithering dialog: global
+                                    preference changes leave it alone    */
+    long   cnt_real, cnt_seen;   /* Count colours (cnt_real < 0: not yet) */
+    int    cnt_used;             /* palette entries the pixels use        */
+    int    copyno;               /* Duplicate: 2, 3, ...                  */
     /* documents */
     u8    *blob;
     long   bloblen;
@@ -107,6 +113,7 @@ typedef struct VWIN {
     int    pdfzoom;              /* 0 = fit width, else percent          */
     int    prepst;               /* page images: 0 to do, 1 done, 2 boxes */
     int    need_prep;            /* build them (with progress) from the loop */
+    int    need_layout;          /* lay a long text out (with progress) */
 } VWIN;
 
 extern VWIN wins[MAXWIN];
@@ -164,6 +171,7 @@ void  win_set_zoom(VWIN *w, int zoom);
 void  win_page(VWIN *w, long page);
 void  win_pdf_zoom(VWIN *w, int step);   /* -1 out, +1 in, 0 fit, 100 */
 void  win_free_content(VWIN *w);
+void  win_status(VWIN *w, const char *text);   /* progress panel's status line */
 int   win_click(VWIN *w, int mx, int my, int clicks);
 void  win_relayout(VWIN *w);
 void  win_update_info(VWIN *w);
@@ -178,6 +186,31 @@ void  win_save_img(VWIN *w, int dithered);
 int   win_begin_op(VWIN *w, int state, const char *verb, PROG *pg);
 void  win_end_op(VWIN *w);
 void  win_shutdown(void);
+/* picture tools (win.c) */
+void  win_duplicate(VWIN *w);
+void  win_reduce(VWIN *w, int ncol, const u8 *pal, int npal);  /* pal: map onto it */
+void  win_resize(VWIN *w, long nw, long nh, int smooth);
+void  win_count(VWIN *w);
+void  win_rerender(VWIN *w);     /* after its wpf changed                */
+void  win_load_palette(VWIN *w);
+void  win_save_palette(VWIN *w);
+void  win_share_palette(int on);
+void  win_share_update(void);    /* windows came or went: new shared one */
+int   win_tool_ok(VWIN *w);      /* a picture the tools can work on now  */
+extern int share_pal;            /* Picture > Share one palette           */
+/* picdlg.c: the Dithering window and the Reduce / Resize dialogs */
+void  picdlg_open(VWIN *w);
+void  picdlg_close(void);
+int   picdlg_handle(int handle);
+void  picdlg_redraw(GRECT *r);
+void  picdlg_click(int mx, int my);
+void  picdlg_moved(GRECT *r);
+void  picdlg_top(void);
+void  picdlg_refresh(VWIN *w);   /* w's settings or counts changed       */
+void  picdlg_forget(VWIN *w);    /* w is going                           */
+void  reduce_dialog(VWIN *w);
+void  resize_dialog(VWIN *w);
+int   modal_number(const char *title, const char *label, long *v, long lo, long hi);
 void  win_prepare_pending(void);
 const char *win_base_name(const char *p);
 
@@ -239,15 +272,18 @@ int     prefs_button_kind(int obj);     /* PB_* */
 enum { PB_NONE = 0, PB_SAVE, PB_APPLY, PB_CLOSE, PB_TOGGLE };
 
 /* menu object indices (must match build_menu() in tree.c) */
+#define NMENUS 5
 enum {
-    MT_DESK = 3, MT_FILE, MT_VIEW, MT_OPTS,
-    MI_ABOUT = 9,
-    MI_OPEN = 18, MI_CLOSE, MI_SEP1, MI_SAVEORIG, MI_SAVEDITH, MI_SEP2,
+    MT_DESK = 3, MT_FILE, MT_VIEW, MT_PIC, MT_OPTS,
+    MI_ABOUT = 10,
+    MI_OPEN = 19, MI_CLOSE, MI_SEP1, MI_SAVEORIG, MI_SAVEDITH, MI_SEP2,
     MI_PRINT, MI_SEP3, MI_QUIT,
-    MI_REAL = 28, MI_FIT, MI_ZOOMIN, MI_ZOOMOUT, MI_SEP4, MI_PREVPG,
+    MI_REAL = 29, MI_FIT, MI_ZOOMIN, MI_ZOOMOUT, MI_SEP4, MI_PREVPG,
     MI_NEXTPG, MI_FIRSTPG, MI_LASTPG, MI_SEP5, MI_CYCLE,
-    MI_PREFS = 40,
-    MENU_NOBJ = 41
+    MI_DUP = 41, MI_DITHER, MI_REDUCE, MI_RESIZE, MI_COUNT, MI_SEP6,
+    MI_LOADPAL, MI_SAVEPAL, MI_SEP7, MI_SHAREPAL,
+    MI_PREFS = 52,
+    MENU_NOBJ = 53
 };
 
 /* prefs.c */
@@ -267,6 +303,10 @@ void print_window(VWIN *w);
 
 /* misc */
 int  gem_handle_ok(void);
+/* main.c */
+void disp_reserved_for(DISPINFO *d, int palmode);   /* pens a picture keeps */
+const char *fv_temp_dir(void);   /* for temporary files, ends in '\'    */
+void win_share_pending(void);
 long now_ms(void);
 
 #endif

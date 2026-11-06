@@ -49,10 +49,20 @@ static int prn_open(PRN *p)
     return 1;
 }
 
+static VWIN *prn_win;              /* the window whose panel shows progress */
+
+/* The driver prints the page in v_updwk: that one call cannot be split
+   or stopped, so say what is happening before it starts. Everything
+   else (dithering, laying out) checks for Cancel and lets windows be
+   moved and redrawn every few rows.                                   */
 static void prn_page_done(PRN *p)
 {
+    if (prn_win)
+        win_status(prn_win, "Sending the page to the printer...");
     v_updwk(p->h);
     v_clrwk(p->h);
+    if (prn_win)
+        win_status(prn_win, "");
 }
 
 static void prn_header(PRN *p, VWIN *w, long page, int *top)
@@ -136,13 +146,17 @@ static int print_image(PRN *p, VWIN *w, PROG *pg)
         MFDB src, dev, scr;
         short pxy[8], col[2];
         memset(band, 0, wdw * 2 * rows);
-        for (r = 0; r < rows; r++) {
+        for (r = 0; r < rows && !e; r++) {
             u16 *dst = (u16 *)band + r * wdw;
             dith_row(dt, y + r, row);
             for (x = 0; x < tw; x++)
                 if (row[x])
                     dst[x >> 4] |= (u16)(0x8000U >> (x & 15));
+            if (prog_step(pg, y + r, th))     /* polls events, ~every 60 ms */
+                e = E_CANCEL;
         }
+        if (e)
+            break;
         memset(&src, 0, sizeof src);
         src.fd_addr = band;
         src.fd_w = (short)(wdw * 16);
@@ -160,8 +174,6 @@ static int print_image(PRN *p, VWIN *w, PROG *pg)
         pxy[6] = pxy[4] + pxy[2]; pxy[7] = pxy[5] + rows - 1;
         col[0] = 1; col[1] = 0;
         vrt_cpyfm(p->h, MD_TRANS, pxy, &dev, &scr, col);
-        if (prog_step(pg, y + rows, th))
-            e = E_CANCEL;
     }
     dith_free(dt);
     free(row);
@@ -182,7 +194,10 @@ static int print_text(PRN *p, VWIN *w, PROG *pg)
     int printed = 0;
 
     txt_measure(&td, p->h, 2540 / p->um_h, p->ncolors, p->um_w);
-    n = txt_layout(w->blob, w->img.doclen, &td, p->pw - 2 * margin, &lines, 0);
+    win_status(w, "Laying out the pages...");
+    n = txt_layout(w->blob, w->img.doclen, &td, p->pw - 2 * margin, &lines, pg);
+    if (pg->cancelled || (n < 0 && pg->cancelled))
+        return E_CANCEL;
     if (n < 0)
         return E_NOMEM;
     prn_header(p, w, page, &top);
@@ -200,7 +215,7 @@ static int print_text(PRN *p, VWIN *w, PROG *pg)
         txt_draw_line(&td, w->blob, l, margin, top + (int)(l->y - pagestart),
                       p->pw - 2 * margin);
         printed = 1;
-        if ((i & 15) == 0 && prog_step(pg, i, n)) {
+        if ((i & 3) == 0 && prog_step(pg, i, n)) {
             free(lines);
             return E_CANCEL;
         }
@@ -284,7 +299,9 @@ void print_window(VWIN *w)
                PRN_DEVICE);
         return;
     }
+    prn_win = w;
     if (!win_begin_op(w, ST_PRINTING, "Printing", &pg)) {
+        prn_win = 0;
         fonts_unload(&p.fs);
         v_clswk(p.h);
         return;
@@ -297,6 +314,7 @@ void print_window(VWIN *w)
         e = print_text(&p, w, &pg);
     fonts_unload(&p.fs);
     v_clswk(p.h);
+    prn_win = 0;
     win_end_op(w);
     if (e && e != E_CANCEL)
         alertf("[1][fview: printing failed.|%.30s][ OK ]", fv_errstr(e));

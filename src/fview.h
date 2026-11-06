@@ -9,7 +9,7 @@
 
 #include <stddef.h>
 
-#define FV_VERSION "1.6.1"
+#define FV_VERSION "1.7.0"
 
 /* the CPU this build is for, from the compiler's own macros */
 #if defined(__mcoldfire__)
@@ -116,6 +116,9 @@ typedef struct {
     char prt_scale;         /* PRS_*                                      */
     char prt_dither;        /* DITH_* for printer output                  */
     char prt_header;        /* print file name / page number header       */
+    char dither_pal;        /* dither paletted pictures on 256+ colour
+                               screens too (off: their colours are mapped
+                               straight, no dither pattern)               */
 } PREFS;
 
 void prefs_default(PREFS *p);

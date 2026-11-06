@@ -41,6 +41,7 @@ void prefs_default(PREFS *p)
     p->prt_scale     = PRS_FIT;
     p->prt_dither    = DITH_FS;
     p->prt_header    = 1;
+    p->dither_pal    = 0;
 }
 
 int prog_step(PROG *p, long done, long total)

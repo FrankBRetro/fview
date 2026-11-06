@@ -83,20 +83,65 @@ int file_select(char *path, char *name, const char *title)
 
 /* --------------------------------------------------------- the display */
 
-void disp_setup_reserved(void)
+/* The pens a picture's palette may not take. Whatever the settings, the
+ * GEM desktop and menus stay readable: pens 0 and 1 (white and black,
+ * the menu bar, window frames and text) are never redefined, nor are 8
+ * and 9 (the greys 3D objects are drawn with) on 16+ colour screens.
+ * Keep GEM colours keeps the first 16 pens on 256 colour screens.     */
+void disp_reserved_for(DISPINFO *d, int palmode)
 {
-    int i, n = dinfo.truecolor ? 0 : (scr_planes >= 8 ? 256 : 1 << scr_planes);
-    memset(dinfo.reserved, 0, sizeof dinfo.reserved);
-    dinfo.palmode = prefs.palmode;
+    int i, n = d->truecolor ? 0 : (scr_planes >= 8 ? 256 : 1 << scr_planes);
+    memset(d->reserved, 0, sizeof d->reserved);
+    d->palmode = palmode;
     for (i = 0; i < n; i++) {
         int pix = vdi2pix(i, scr_planes);
-        if (dinfo.fixed_palette || prefs.palmode == PAL_SYSTEM)
-            dinfo.reserved[pix] = 1;
-        else if (prefs.keep_sys && i < (n >= 256 ? 16 : 2))
-            dinfo.reserved[pix] = 1;
+        if (d->fixed_palette || palmode == PAL_SYSTEM)
+            d->reserved[pix] = 1;
+        else if (i < 2 || (aes_3d && n >= 16 && (i == 8 || i == 9)))
+            d->reserved[pix] = 1;          /* always: the UI must stay legible */
+        else if (prefs.keep_sys && n >= 256 && i < 16)
+            d->reserved[pix] = 1;
     }
+}
+
+void disp_setup_reserved(void)
+{
+    disp_reserved_for(&dinfo, prefs.palmode);
     pal_restore();
     pal_invalidate();
+}
+
+/* temporary files: $TMPDIR / $TEMP / $TMP, else where FView started */
+static char start_dir[256];
+
+const char *fv_temp_dir(void)
+{
+    static char t[256];
+    const char *e = getenv("TMPDIR");
+    size_t n;
+    if (!e || !*e) e = getenv("TEMP");
+    if (!e || !*e) e = getenv("TMP");
+    if (e && *e && strlen(e) < 240) {
+        strcpy(t, e);
+        for (n = 0; t[n]; n++)
+            if (t[n] == '/') t[n] = '\\';
+        if (t[1] != ':' && t[0] == '\\') {    /* "\tmp": on the boot drive */
+            memmove(t + 2, t, strlen(t) + 1);
+            t[0] = 'U';                        /* MiNT's root, all drives */
+            t[1] = ':';
+        }
+    } else {
+        if (!start_dir[0]) {
+            start_dir[0] = Dgetdrv() + 'A';
+            start_dir[1] = ':';
+            Dgetpath(start_dir + 2, 0);
+        }
+        strcpy(t, start_dir);
+    }
+    n = strlen(t);
+    if (n && t[n - 1] != '\\')
+        strcat(t, "\\");
+    return t;
 }
 
 
@@ -427,6 +472,19 @@ void menu_update(void)
     menu_ienable(menu, MI_NEXTPG, pdf && w->page < w->npages - 1);
     menu_ienable(menu, MI_FIRSTPG, pdf);
     menu_ienable(menu, MI_LASTPG, pdf);
+    {
+        int tool = win_tool_ok(w);
+        menu_ienable(menu, MI_DUP, tool);
+        menu_ienable(menu, MI_DITHER, img);
+        menu_ienable(menu, MI_REDUCE, tool);
+        menu_ienable(menu, MI_RESIZE, tool);
+        menu_ienable(menu, MI_COUNT, tool);
+        menu_ienable(menu, MI_LOADPAL, tool);
+        menu_ienable(menu, MI_SAVEPAL, img);
+        menu_ienable(menu, MI_SHAREPAL, !dinfo.truecolor && !dinfo.fixed_palette &&
+                                        scr_planes > 1);
+        menu_icheck(menu, MI_SHAREPAL, share_pal);
+    }
 }
 
 static void about(void)
@@ -518,6 +576,14 @@ static void do_menu(int title, int item)
     case MI_FIRSTPG:  if (w) win_page(w, 0); break;
     case MI_LASTPG:   if (w) win_page(w, w->npages - 1); break;
     case MI_CYCLE:    cycle_windows(); break;
+    case MI_DUP:      win_duplicate(w); break;
+    case MI_DITHER:   if (w && w->kind == K_IMAGE) picdlg_open(w); break;
+    case MI_REDUCE:   reduce_dialog(w); break;
+    case MI_RESIZE:   resize_dialog(w); break;
+    case MI_COUNT:    win_count(w); break;
+    case MI_LOADPAL:  win_load_palette(w); break;
+    case MI_SAVEPAL:  win_save_palette(w); break;
+    case MI_SHAREPAL: win_share_palette(!share_pal); break;
     case MI_PREFS:    prefs_open(); break;
     }
     menu_tnormal(menu, title, 1);
@@ -714,6 +780,15 @@ void gui_dispatch_message(short *msg)
         }
         return;
     }
+    if (msg[0] >= WM_REDRAW && msg[0] <= 40 && picdlg_handle(msg[3])) {
+        switch (msg[0]) {
+        case WM_REDRAW: picdlg_redraw(r); break;
+        case WM_TOPPED: picdlg_top(); break;
+        case WM_CLOSED: picdlg_close(); break;
+        case WM_MOVED:  picdlg_moved(r); break;
+        }
+        return;
+    }
     switch (msg[0]) {
     case MN_SELECTED:
         do_menu(msg[3], msg[4]);
@@ -814,8 +889,16 @@ void gui_handle_key(int ks, int key)
         case 'O': do_open(); return;
         case 'U': if (w) win_close(w); menu_update(); return;
         case 'Q': quit(); return;
-        case 'S': if (w) win_save_img(w, 0); return;
-        case 'D': if (w) win_save_img(w, 1); return;
+        case 'S': if (w) win_save_img(w, shift ? 1 : 0); return;
+        case 'D': win_duplicate(w); return;
+        case 'T': if (w && w->kind == K_IMAGE) picdlg_open(w); return;
+        case 'K': reduce_dialog(w); return;
+        case 'R': resize_dialog(w); return;
+        case 'I': win_count(w); return;
+        case 'L': if (shift) win_save_palette(w); else win_load_palette(w); return;
+        case 'G': if (!dinfo.truecolor && !dinfo.fixed_palette && scr_planes > 1)
+                      win_share_palette(!share_pal);
+                  return;
         case 'P': if (w) print_window(w); return;
         case 'B': if (w) win_page(w, w->page - 1); menu_update(); return;
         case 'N': if (w) win_page(w, w->page + 1); menu_update(); return;
@@ -870,6 +953,10 @@ void gui_handle_button(int mx, int my, int mb, int ks, int clicks)
     (void)mb; (void)ks;
     if (prefs_handle(h)) {
         prefs_click(mx, my);
+        return;
+    }
+    if (picdlg_handle(h)) {
+        picdlg_click(mx, my);
         return;
     }
     w = win_find(h);
@@ -1019,6 +1106,8 @@ int main(int argc, char **argv)
     fonts_load(&scrfonts, vdih, scr_sysfonts);   /* GDOS fonts, if any */
     aes_iconify = detect_iconify();
     aes_3d = detect_3d();
+    disp_setup_reserved();                    /* again: 3D greys are kept */
+    fv_temp_dir();                            /* note the start folder now */
     dbg("AES %04x apps %d iconify %d 3d %d screen %dx%d planes %d truecolor %d cell %dx%d",
         _AESversion, _AESnumapps, aes_iconify, aes_3d, scr_w, scr_h, scr_planes,
         dinfo.truecolor, cell_w, cell_h);
@@ -1055,7 +1144,8 @@ int main(int argc, char **argv)
             gui_handle_key(ks, key);
         job_poll();
         job_run_pending();          /* TOS / workers off: one at a time */
-        win_prepare_pending();      /* PDF page images, with progress */
+        win_prepare_pending();      /* PDF page images, text layout, with progress */
+        win_share_pending();        /* a shared palette that had to wait */
         update_pointer();
         pal_check_top();
     }

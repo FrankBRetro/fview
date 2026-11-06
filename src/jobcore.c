@@ -31,6 +31,7 @@ void shm_path(char *buf, const char *name)
 }
 
 void res_set_shared(int on) { shared = on; }
+int  res_is_shared(void) { return shared; }
 
 void *res_alloc(int slot, long size)
 {

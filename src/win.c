@@ -10,6 +10,27 @@
 #include <string.h>
 #include <osbind.h>
 #include "gemui.h"
+#include "palette.h"
+
+/* ------------------------------------------------- the shared palette */
+
+int share_pal;                   /* Picture > Share one palette          */
+static int share_ok;             /* share_rgb is up to date              */
+static u8 share_rgb[256 * 3];    /* by pixel value                       */
+static JOB *share_job;           /* OP_SHAREPAL running                  */
+static VWIN *share_win;          /* ... in this window's progress panel  */
+static int share_again;          /* pictures changed while it ran        */
+
+static int share_possible(void)
+{
+    return !dinfo.truecolor && !dinfo.fixed_palette && scr_planes > 1;
+}
+
+static int share_active(void)
+{
+    return share_pal && share_ok && share_possible();
+}
+
 
 VWIN wins[MAXWIN];
 
@@ -144,6 +165,8 @@ void win_free_content(VWIN *w)
 
 static void win_destroy(VWIN *w)
 {
+    int was_image = w->kind == K_IMAGE && w->img.im.px;
+    picdlg_forget(w);
     progdlg_close(w);
     if (w->handle > 0) {
         wind_close(w->handle);
@@ -158,12 +181,28 @@ static void win_destroy(VWIN *w)
     w->used = 0;
     pal_invalidate();
     menu_update();
+    if (was_image && share_pal)
+        win_share_update();            /* one picture fewer to share with */
 }
 
 void win_close(VWIN *w)
 {
     if (w->kind == K_MAIN)
         return;
+    if (share_job && w != share_win && w->kind == K_IMAGE && w->img.im.px) {
+        /* the shared palette job is reading this picture: hide the
+           window now, free it when that job is done                    */
+        w->closing = 2;
+        picdlg_forget(w);
+        if (w->handle > 0) {
+            wind_close(w->handle);
+            wind_delete(w->handle);
+            w->handle = 0;
+        }
+        pal_invalidate();
+        menu_update();
+        return;
+    }
     if (w->job && !w->job->done) {
         /* stop the job first; the window disappears now, the slot is
            freed when the job reports back */
@@ -569,8 +608,19 @@ static void doc_size(VWIN *w)
     }
 }
 
+/* long documents take a while to lay out on a 68000: they are done from
+   the main loop with the progress bar and Cancel (win_prepare_pending) */
+#define LAYOUT_INLINE 24000L
+
 void win_relayout(VWIN *w)
 {
+    if (w->kind == K_TEXT && w->blob && w->img.doclen > LAYOUT_INLINE) {
+        w->need_layout = 1;
+        doc_size(w);
+        win_scroll_to(w, w->xoff, w->yoff);
+        win_set_sliders(w);
+        return;
+    }
     if (w->kind == K_TEXT && w->blob) {
         TLINE *l = 0;
         long n;
@@ -607,6 +657,10 @@ void win_update_info(VWIN *w)
                 w->zoom == ZOOM_FIT ? "fit" : (rw != w->img.im.w || rh != w->img.im.h) ?
                 "real size" : "1:1",
                 (rw != w->img.im.w || rh != w->img.im.h) ? ", aspect corrected" : "");
+        if (w->cnt_real >= 0 && strlen(w->info) < 100)
+            sprintf(w->info + strlen(w->info), "  %ld colours", w->cnt_real);
+        if (w->cnt_real >= 0 && w->cnt_seen >= 0 && strlen(w->info) < 120)
+            sprintf(w->info + strlen(w->info), ", ~%ld seen", w->cnt_seen);
     }
     else if (w->kind == K_IMAGE)
         sprintf(w->info, " %s", ftype_name(w->ftype));
@@ -1235,15 +1289,23 @@ static void make_job(VWIN *w, int op)
     j->q.op = op;
     strncpy(j->q.path, w->path, sizeof j->q.path - 1);
     j->q.ftype = w->ftype;
-    j->q.pf = prefs;
+    j->q.pf = w->kind == K_IMAGE ? w->wpf : prefs;
     j->q.disp = dinfo;
-    j->q.disp.palmode = prefs.palmode;
+    /* the window's own palette choice decides which colours are free */
+    disp_reserved_for(&j->q.disp, j->q.pf.palmode);
+    if (w->kind == K_IMAGE && share_active()) {
+        /* Share one palette: every picture is dithered onto it */
+        j->q.disp.palmode = PAL_SYSTEM;
+        memcpy(j->q.disp.sysrgb, share_rgb, sizeof share_rgb);
+    }
     j->win = w;
     w->job = j;
 }
 
 void win_load(VWIN *w, const char *path)
 {
+    w->wpf = prefs;
+    w->cnt_real = -1;
     strncpy(w->path, path, sizeof w->path - 1);
     w->ftype = ftype_detect(path);
     sprintf(w->title, " %.60s ", base_name(path));
@@ -1270,11 +1332,10 @@ void win_load(VWIN *w, const char *path)
 static void start_render(VWIN *w)
 {
     JOB *j;
-    if (w->job) {                         /* restart a render in progress */
-        if (w->job->q.op == OP_RENDER && !w->job->done) {
-            w->want_rerender = 1;
-            job_cancel(w->job);
-        }
+    if (w->job) {                         /* render once this job is done */
+        w->want_rerender = 1;
+        if (w->job->q.op == OP_RENDER && !w->job->done)
+            job_cancel(w->job);           /* restart a render in progress */
         return;
     }
     make_job(w, OP_RENDER);
@@ -1382,39 +1443,100 @@ static void show_error(VWIN *w, JOBRES *r)
             r->detail[0] ? ": " : "", r->detail);
 }
 
+static const char *op_name(int op)
+{
+    switch (op) {
+    case OP_RENDER:  return "render";
+    case OP_DUP:     return "copy";
+    case OP_REDUCE:  return "reduce the colours of";
+    case OP_RESIZE:  return "resize";
+    case OP_COUNT:   return "count the colours of";
+    case OP_SHAREPAL: return "make a shared palette for";
+    }
+    return "read";
+}
+
+/* the windows the shared palette job left hidden: free them now */
+static void share_done_cleanup(void)
+{
+    int i;
+    for (i = 0; i < MAXWIN; i++)
+        if (wins[i].used && wins[i].closing == 2 && !wins[i].job)
+            win_destroy(&wins[i]);
+}
+
+/* a picture's display arrived (load, render or a picture tool) */
+static void take_display(VWIN *w, JOB *j, JOBRES *r)
+{
+    int op = j->q.op;
+    if (op == OP_RENDER) {
+        w->img.dw = r->dw;
+        w->img.dh = r->dh;
+        w->img.wdwidth = r->wdwidth;
+        memcpy(w->img.pal, r->pal, sizeof r->pal);
+        /* swap in the new display block */
+        job_release(&w->img, RB_DISP);
+        w->img.ptr[RB_DISP] = r->ptr[RB_DISP];
+        w->img.size[RB_DISP] = r->size[RB_DISP];
+        w->img.attached[RB_DISP] = r->attached[RB_DISP];
+        strcpy(w->img.shm[RB_DISP], r->shm[RB_DISP]);
+    } else {
+        /* a new picture for this window: the old copy goes */
+        int k;
+        for (k = 0; k < RB_MAX; k++)
+            job_release(&w->img, k);
+        w->img = *r;                      /* takes ownership of blocks */
+        w->img.im.px = r->ptr[RB_ORIG];
+        w->cnt_real = -1;
+        if (op == OP_LOAD)
+            w->wpf.dither = (char)r->rdither;   /* none for 8-bit pictures */
+    }
+}
+
 void win_job_finished(VWIN *w, JOB *j)
 {
     JOBRES *r = &j->res;
     int i, op = j->q.op;
+    VWIN *dst = w;                        /* where the picture goes */
 
     dbg("job finished for window %d: op %d err %d kind %d closing %d",
         w->handle, op, r->err, r->kind, w->closing);
     w->job = 0;
     progdlg_close(w);
+    if (op == OP_SHAREPAL)
+        remove(j->q.list);
+    if (j == share_job) {
+        share_job = 0;
+        share_win = 0;
+    }
     if (w->closing) {
         for (i = 0; i < RB_MAX; i++)
             job_release(r, i);
         free(j);
         win_destroy(w);
+        share_done_cleanup();
         return;
     }
     if (r->err) {
         for (i = 0; i < RB_MAX; i++)
             job_release(r, i);
         free(j);
-        if (op == OP_RENDER) {
+        if (op != OP_LOAD) {
+            /* the picture and its old rendering are still there */
             w->state = ST_IDLE;
+            share_done_cleanup();
             if (w->want_rerender) {
                 w->want_rerender = 0;
                 start_render(w);
                 return;
             }
             if (r->err != E_CANCEL)
-                alertf("[1][fview: could not render|%.30s][ OK ]", base_name(w->path));
-            /* the old rendering is still there */
+                alertf("[1][fview: could not %s|%.30s:|%.30s][ OK ]", op_name(op),
+                       base_name(w->path), r->detail[0] ? r->detail : fv_errstr(r->err));
             doc_size(w);
             win_set_sliders(w);
             win_redraw_all(w);
+            menu_update();
             return;
         }
         if (r->err == E_CANCEL) {         /* cancelled load: drop window */
@@ -1428,40 +1550,112 @@ void win_job_finished(VWIN *w, JOB *j)
         return;
     }
 
-    if (r->kind == K_IMAGE) {
-        if (op == OP_LOAD) {
-            w->img = *r;                  /* takes ownership of blocks */
-            w->img.im.px = r->ptr[RB_ORIG];
-        } else {
-            w->img.dw = r->dw;
-            w->img.dh = r->dh;
-            w->img.wdwidth = r->wdwidth;
-            memcpy(w->img.pal, r->pal, sizeof r->pal);
-            /* swap in the new display block */
-            job_release(&w->img, RB_DISP);
-            w->img.ptr[RB_DISP] = r->ptr[RB_DISP];
-            w->img.size[RB_DISP] = r->size[RB_DISP];
-            w->img.attached[RB_DISP] = r->attached[RB_DISP];
-            strcpy(w->img.shm[RB_DISP], r->shm[RB_DISP]);
-        }
-        dbg("to_device %ldx%ld wdwidth %ld planes %d from %lx",
-            w->img.dw, w->img.dh, w->img.wdwidth, scr_planes, (long)w->img.ptr[RB_DISP]);
-        if (!to_device(w, &w->img)) {
-            r->err = E_NOMEM;
-            show_error(w, r);
-            free(j);
-            win_redraw_all(w);
+    if (op == OP_COUNT) {
+        w->state = ST_IDLE;
+        w->cnt_real = r->acount[0];
+        w->cnt_seen = r->acount[1];
+        w->cnt_used = (int)r->acount[2];
+        free(j);
+        win_update_info(w);
+        win_redraw_all(w);
+        picdlg_refresh(w);
+        menu_update();
+        if (w->img.im.type == IT_INDEXED)
+            alertf("[1][%.28s|Real colours: %ld|Palette entries used: %d of %d|"
+                   "Seen on this screen: about %ld|(neighbouring dots blended)][ OK ]",
+                   base_name(w->path), w->cnt_real, w->cnt_used, w->img.im.ncolors,
+                   w->cnt_seen);
+        else
+            alertf("[1][%.28s|Real colours: %ld|Seen on this screen: about %ld|"
+                   "(neighbouring dots blended)][ OK ]",
+                   base_name(w->path), w->cnt_real, w->cnt_seen);
+        return;
+    }
+    if (op == OP_SHAREPAL) {
+        w->state = ST_IDLE;
+        memcpy(share_rgb, r->pal, sizeof share_rgb);
+        share_ok = 1;
+        free(j);
+        share_done_cleanup();
+        if (share_again) {                /* pictures changed meanwhile */
+            share_again = 0;
+            win_share_update();
             return;
         }
-        memcpy(w->pal, w->img.pal, sizeof w->pal);
-        w->haspal = !dinfo.truecolor && !dinfo.fixed_palette &&
-                    prefs.palmode == PAL_OPTIMISE;
-        dbg("display MFDB addr %lx w %d h %d wd %d planes %d", (long)w->disp.fd_addr,
-            w->disp.fd_w, w->disp.fd_h, w->disp.fd_wdwidth, w->disp.fd_nplanes);
-        w->state = ST_IDLE;
-        if (op == OP_LOAD && w->zoom == ZOOM_REAL)
-            fit_window_to_image(w);
-        doc_size(w);
+        for (i = 0; i < MAXWIN; i++)      /* everyone onto the new palette */
+            if (wins[i].used && wins[i].kind == K_IMAGE && wins[i].img.im.px &&
+                wins[i].handle > 0)
+                start_render(&wins[i]);
+        win_redraw_all(w);
+        menu_update();
+        return;
+    }
+
+    if (r->kind == K_IMAGE) {
+        if (op == OP_DUP) {
+            /* the copy gets a window of its own */
+            dst = win_new();
+            if (dst) {
+                *dst = *w;                /* settings, path, size... */
+                dst->handle = 0;
+                dst->job = 0;
+                dst->pdlg = 0;
+                dst->iconified = 0;
+                dst->closing = 0;
+                dst->want_rerender = 0;
+                dst->state = ST_LOADING;
+                dst->dispmem = 0;
+                memset(&dst->disp, 0, sizeof dst->disp);
+                memset(&dst->img, 0, sizeof dst->img);
+                dst->copyno = w->copyno ? w->copyno + 1 : 2;
+                for (i = 0; i < MAXWIN; i++)   /* a number no other copy has */
+                    if (wins[i].used && &wins[i] != dst && &wins[i] != w &&
+                        !strcmp(wins[i].path, w->path) && wins[i].copyno >= dst->copyno)
+                        dst->copyno = wins[i].copyno + 1;
+                sprintf(dst->title, " %.50s (copy %d) ", base_name(w->path), dst->copyno);
+                dst->xoff = dst->yoff = 0;
+                if (!win_open(dst, K_IMAGE)) {
+                    dst->used = 0;
+                    dst = 0;
+                }
+            }
+            w->state = ST_IDLE;
+            win_redraw_all(w);
+            if (!dst) {
+                for (i = 0; i < RB_MAX; i++)
+                    job_release(r, i);
+                free(j);
+                alertf("[1][fview: no window for the copy.][ OK ]");
+                menu_update();
+                return;
+            }
+        }
+        take_display(dst, j, r);
+        dbg("to_device %ldx%ld wdwidth %ld planes %d from %lx",
+            dst->img.dw, dst->img.dh, dst->img.wdwidth, scr_planes, (long)dst->img.ptr[RB_DISP]);
+        if (!to_device(dst, &dst->img)) {
+            r->err = E_NOMEM;
+            show_error(dst, r);
+            free(j);
+            win_redraw_all(dst);
+            return;
+        }
+        memcpy(dst->pal, dst->img.pal, sizeof dst->pal);
+        /* the window sets its palette when it is on top: its own one, or
+           the shared one (the same in every window, so nothing flickers) */
+        dst->haspal = !dinfo.truecolor && !dinfo.fixed_palette &&
+                      (j->q.pf.palmode == PAL_OPTIMISE || j->q.disp.palmode != j->q.pf.palmode);
+        dbg("display MFDB addr %lx w %d h %d wd %d planes %d", (long)dst->disp.fd_addr,
+            dst->disp.fd_w, dst->disp.fd_h, dst->disp.fd_wdwidth, dst->disp.fd_nplanes);
+        dst->state = ST_IDLE;
+        if ((op == OP_LOAD || op == OP_DUP || op == OP_RESIZE) && dst->zoom == ZOOM_REAL)
+            fit_window_to_image(dst);
+        doc_size(dst);
+        if (op != OP_RENDER)
+            picdlg_refresh(dst);
+        /* a new picture to share the palette with */
+        if (share_pal && (op == OP_LOAD || op == OP_DUP || op == OP_REDUCE || op == OP_RESIZE))
+            win_share_update();
     } else {
         w->img = *r;
         w->blob = r->ptr[RB_DOC];
@@ -1477,22 +1671,298 @@ void win_job_finished(VWIN *w, JOB *j)
         win_relayout(w);
     }
     free(j);
-    if (w->want_rerender) {
+    if (dst != w && w->want_rerender) {   /* the original, after a copy */
         w->want_rerender = 0;
         start_render(w);
+    }
+    if (dst->want_rerender) {
+        dst->want_rerender = 0;
+        start_render(dst);
         return;
     }
-    win_update_info(w);
-    win_set_sliders(w);
+    win_update_info(dst);
+    win_set_sliders(dst);
     pal_invalidate();
     pal_check_top();
     /* the window may just have been resized: let the AES finish with the
        frame and tell us what to draw, as well as drawing now           */
-    win_redraw_all(w);
-    win_post_redraw(w);
-    dbg("window %d ready, work %d,%d %dx%d", w->handle, w->work.g_x, w->work.g_y,
-        w->work.g_w, w->work.g_h);
+    win_redraw_all(dst);
+    win_post_redraw(dst);
+    dbg("window %d ready, work %d,%d %dx%d", dst->handle, dst->work.g_x, dst->work.g_y,
+        dst->work.g_w, dst->work.g_h);
     menu_update();
+}
+
+/* ---------------------------------------------------------- picture tools */
+
+int win_tool_ok(VWIN *w)
+{
+    return w && w->used && w->kind == K_IMAGE && w->img.im.px && w->disp.fd_addr &&
+           !win_busy(w) && !w->job && !w->closing && !share_job && !coop_busy;
+}
+
+/* start a picture tool on w's copy of its picture */
+static JOB *tool_job(VWIN *w, int op, const char *verb)
+{
+    JOB *j;
+    if (!win_tool_ok(w)) {
+        if (share_job)
+            alertf("[1][fview: please wait until the|shared palette is made.][ OK ]");
+        return 0;
+    }
+    make_job(w, op);
+    j = w->job;
+    if (!j)
+        return 0;
+    get_work(w);
+    j->q.src = w->img.im;
+    strcpy(j->q.src_shm, w->img.shm[RB_ORIG]);
+    if (op == OP_COUNT) {                 /* as shown now */
+        j->q.tw = w->img.dw;
+        j->q.th = w->img.dh;
+    } else if (w->zoom == ZOOM_FIT) {
+        j->q.tw = w->work.g_w;
+        j->q.th = w->work.g_h;
+    }
+    w->state = ST_RENDER;
+    begin_panel(w, verb);
+    win_redraw_all(w);
+    return j;
+}
+
+static void tool_go(VWIN *w)
+{
+    job_start(w->job);
+    menu_update();
+}
+
+void win_duplicate(VWIN *w)
+{
+    if (tool_job(w, OP_DUP, "Copying"))
+        tool_go(w);
+}
+
+void win_reduce(VWIN *w, int ncol, const u8 *pal, int npal)
+{
+    JOB *j = tool_job(w, OP_REDUCE, pal ? "Mapping onto the palette" : "Reducing colours");
+    if (!j)
+        return;
+    j->q.ncol = ncol;
+    if (pal && npal > 0) {
+        j->q.xpal_n = npal > 256 ? 256 : npal;
+        memcpy(j->q.xpal, pal, j->q.xpal_n * 3);
+    }
+    tool_go(w);
+}
+
+void win_resize(VWIN *w, long nw, long nh, int smooth)
+{
+    JOB *j = tool_job(w, OP_RESIZE, "Resizing");
+    if (!j)
+        return;
+    j->q.nw = nw;
+    j->q.nh = nh;
+    j->q.smooth = smooth;
+    tool_go(w);
+}
+
+void win_count(VWIN *w)
+{
+    if (tool_job(w, OP_COUNT, "Counting colours"))
+        tool_go(w);
+}
+
+void win_rerender(VWIN *w)
+{
+    if (w && w->kind == K_IMAGE && w->img.im.px && !w->closing) {
+        w->cnt_seen = -1;                 /* the shown colours change */
+        start_render(w);
+    }
+}
+
+/* ------------------------------------------------------- palette files */
+
+static int pal_select(VWIN *w, char *path, const char *title, int save)
+{
+    char name[64], *s;
+    strcpy(path, w->path);
+    s = strrchr(path, '\\');
+    strcpy(name, s ? s + 1 : path);
+    if (s) s[1] = 0; else path[0] = 0;
+    strcat(path, "*.PAL");
+    if (save) {
+        char *d = strrchr(name, '.');
+        if (d) *d = 0;
+        name[8] = 0;
+        strcat(name, ".PAL");
+    } else
+        name[0] = 0;
+    if (!file_select(path, name, title) || !name[0])
+        return 0;
+    s = strrchr(path, '\\');
+    if (s) s[1] = 0;
+    strcat(path, name);
+    return 1;
+}
+
+void win_save_palette(VWIN *w)
+{
+    char path[300];
+    const u8 *pal;
+    int n, e;
+    if (!w || w->kind != K_IMAGE || !w->img.im.px)
+        return;
+    if (w->img.im.type == IT_INDEXED) {
+        pal = w->img.im.pal;              /* the picture's own palette */
+        n = w->img.im.ncolors;
+    } else if (w->haspal) {
+        pal = w->pal;                     /* the one it is shown with */
+        n = scr_planes >= 8 ? 256 : 1 << scr_planes;
+    } else {
+        alertf("[1][%.28s is a true colour|picture and has no palette.|"
+               "Reduce its colours first.][ OK ]", base_name(w->path));
+        return;
+    }
+    if (!pal_select(w, path, "Save palette (.PAL .ACT .GPL)", 1))
+        return;
+    graf_mouse(BUSYBEE, 0);
+    e = pal_save_file(path, pal, n);
+    graf_mouse(ARROW, 0);
+    if (e)
+        alertf("[1][fview: could not save|%.30s][ OK ]", base_name(path));
+}
+
+void win_load_palette(VWIN *w)
+{
+    char path[300];
+    u8 pal[256 * 3];
+    int n = 0, e, b;
+    if (!win_tool_ok(w))
+        return;
+    if (!pal_select(w, path, "Load palette", 0))
+        return;
+    graf_mouse(BUSYBEE, 0);
+    e = pal_load_file(path, pal, &n);
+    graf_mouse(ARROW, 0);
+    if (e || n < 1) {
+        alertf("[1][fview: %.30s|is not a palette fview knows|"
+               "(.PAL .ACT .GPL, raw RGB,|Degas or NEOchrome).][ OK ]", base_name(path));
+        return;
+    }
+    if (w->img.im.type == IT_INDEXED) {
+        char msg[200];
+        sprintf(msg, "[2][%d colours from %.20s:|Replace: recolour by number|"
+                "Map: keep the look, use|only these colours][Replace|Map|Cancel]",
+                n, base_name(path));
+        b = form_alert(1, msg);
+    } else {
+        char msg[200];
+        sprintf(msg, "[2][Map %.20s onto the|%d colours of %.20s?][Map|Cancel]",
+                base_name(w->path), n, base_name(path));
+        b = form_alert(1, msg) == 1 ? 2 : 3;
+    }
+    if (b == 1) {
+        /* new colours for the same pixel numbers: only the header of
+           the window's copy changes, then it is shown again           */
+        memcpy(w->img.im.pal, pal, n * 3);
+        if (n > w->img.im.ncolors)
+            w->img.im.ncolors = n;
+        w->cnt_real = -1;
+        if (share_pal)
+            win_share_update();
+        else
+            start_render(w);
+    } else if (b == 2)
+        win_reduce(w, n, pal, n);
+}
+
+/* --------------------------------------------------------- sharing it */
+
+void win_share_palette(int on)
+{
+    int i;
+    if (on && !share_possible()) {
+        alertf("[1][Sharing a palette needs a screen|with a palette the pictures|can change "
+               "(4 to 256 colours).][ OK ]");
+        return;
+    }
+    share_pal = on;
+    share_ok = 0;
+    if (on)
+        win_share_update();
+    else
+        for (i = 0; i < MAXWIN; i++)      /* back to their own palettes */
+            if (wins[i].used && wins[i].kind == K_IMAGE && wins[i].img.im.px &&
+                wins[i].handle > 0)
+                start_render(&wins[i]);
+    menu_update();
+}
+
+/* make the palette from every picture shown now (a job, with progress) */
+void win_share_update(void)
+{
+    VWIN *host = 0;
+    char list[300];
+    FILE *f;
+    int i, n = 0, all_shm = 1;
+    if (!share_pal || !share_possible() || quitting)
+        return;
+    if (share_job) {                      /* again once this one is done */
+        share_again = 1;
+        return;
+    }
+    /* the list of pictures goes through a file, like FArchive's lists */
+    sprintf(list, "%sFVSHARE.TMP", fv_temp_dir());
+    f = fopen(list, "wb");
+    if (!f)
+        return;
+    for (i = 0; i < MAXWIN; i++) {
+        VWIN *w = &wins[i];
+        SPREC rec;
+        if (!w->used || w->kind != K_IMAGE || !w->img.im.px || w->closing)
+            continue;
+        memset(&rec, 0, sizeof rec);
+        rec.im = w->img.im;
+        strcpy(rec.shm, w->img.shm[RB_ORIG]);
+        if (!rec.shm[0])
+            all_shm = 0;
+        fwrite(&rec, sizeof rec, 1, f);
+        n++;
+        if (!host && !win_busy(w) && !w->job && w->handle > 0)
+            host = w;
+    }
+    fclose(f);
+    if (!n) {
+        remove(list);
+        share_ok = 0;
+        return;
+    }
+    if (!host) {                          /* all busy: try again later */
+        share_again = 1;
+        return;
+    }
+    make_job(host, OP_SHAREPAL);
+    if (!host->job)
+        return;
+    strcpy(host->job->q.list, list);
+    disp_reserved_for(&host->job->q.disp, PAL_OPTIMISE);
+    strcpy(host->job->q.src_shm, all_shm ? "all" : "");
+    share_job = host->job;
+    share_win = host;
+    host->state = ST_RENDER;
+    begin_panel(host, "Making a shared palette");
+    win_redraw_all(host);
+    job_start(host->job);
+    menu_update();
+}
+
+/* called from the main loop: a shared palette wanted while all were busy */
+void win_share_pending(void)
+{
+    if (share_again && !share_job) {
+        share_again = 0;
+        win_share_update();
+    }
 }
 
 /* ---------------------------------------------------------------- pages */
@@ -1616,8 +2086,18 @@ void win_apply_prefs(void)
             render_cache_flush();            /* dither may have changed */
             w->prepst = 0;
         }
-        if (w->kind == K_IMAGE && w->img.im.px)
+        if (w->kind == K_IMAGE && w->img.im.px) {
+            /* windows not set up in their own Dithering dialog follow */
+            if (!w->wpf_own) {
+                w->wpf.dither = prefs.dither;
+                w->wpf.serpentine = prefs.serpentine;
+                w->wpf.smooth = prefs.smooth;
+                w->wpf.palmode = prefs.palmode;
+            }
+            w->wpf.keep_sys = prefs.keep_sys;
+            w->cnt_seen = -1;
             start_render(w);                 /* dither / palette changes */
+        }
         else if (w->kind == K_TEXT || w->kind == K_PDF) {
             win_relayout(w);
             win_update_info(w);
@@ -1646,9 +2126,57 @@ static int op_prog(PROG *p, long done, long total)
 
 /* Build PDF page images that the redraw left for later, with a progress
    dialog and Cancel. Called from the main loop only.                   */
+void win_status(VWIN *w, const char *text)
+{
+    if (!w)
+        return;
+    strncpy(w->pstat, text, sizeof w->pstat - 1);
+    w->pstat[sizeof w->pstat - 1] = 0;
+    draw_panel_objs(w, 4);
+}
+
+static void layout_pending(VWIN *w)
+{
+    PROG pg;
+    TLINE *l = 0;
+    long n;
+    int width;
+    if (win_busy(w) || coop_busy || w->handle <= 0 || w->iconified)
+        return;                               /* try again later */
+    w->need_layout = 0;
+    if (!scrtd_ok) {
+        txt_measure(&scrtd, vdih, cell_h > 10 ? 13 : 6, 1 << (scr_planes > 8 ? 8 : scr_planes),
+                    pix_w_um);
+        scrtd_ok = 1;
+    }
+    get_work(w);
+    width = w->work.g_w;
+    if (!win_begin_op(w, ST_RENDER, "Formatting", &pg))
+        return;
+    n = txt_layout(w->blob, w->img.doclen, &scrtd, width, &l, &pg);
+    if (n >= 0 && !pg.cancelled && !(w->closing & 1)) {
+        free(w->lines);
+        w->lines = l;
+        w->nlines = n;
+        w->laywidth = width;
+    } else
+        free(l);
+    win_end_op(w);                            /* may free the window */
+    if (!w->used)
+        return;
+    doc_size(w);
+    win_scroll_to(w, w->xoff, w->yoff);
+    win_set_sliders(w);
+    win_update_info(w);
+    win_redraw_all(w);
+}
+
 void win_prepare_pending(void)
 {
     int i;
+    for (i = 0; i < MAXWIN; i++)
+        if (wins[i].used && wins[i].need_layout && wins[i].kind == K_TEXT && wins[i].blob)
+            layout_pending(&wins[i]);
     for (i = 0; i < MAXWIN; i++) {
         VWIN *w = &wins[i];
         PROG pg;

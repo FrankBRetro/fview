@@ -30,58 +30,79 @@ static void obj_add(OBJECT *t, int idx, int parent, int type, int flags,
 
 static OBJECT menu[MENU_NOBJ];
 
-static const char *titles[] = { " FView ", " File ", " View ", " Options " };
+/* Laid out the Atari way: the program's own menu first (About, then the
+   accessories), File, View, the program's menus, Options last. Every
+   item starts with two spaces (room for a tick), ends in its shortcut
+   right-aligned with a space after it; "..." marks items that ask for
+   more before they act; separators are disabled lines of dashes.
+   Shortcuts: ^ Control, \001 (the arrow) Shift + Control.            */
+static const char *titles[] = { " FView ", " File ", " View ", " Picture ", " Options " };
 static const char *desk_items[] = {
     "  About FView...     ", "---------------------",
     "  Desk Accessory 1   ", "  Desk Accessory 2   ", "  Desk Accessory 3   ",
     "  Desk Accessory 4   ", "  Desk Accessory 5   ", "  Desk Accessory 6   "
 };
 static const char *file_items[] = {
-    "  Open...          ^O ", "  Close            ^U ", "---------------------",
-    "  Save IMG original ^S ", "  Save IMG dithered ^D ", "---------------------",
-    "  Print...         ^P ", "---------------------", "  Quit             ^Q "
+    "  Open...                ^O ", "  Close                  ^U ",
+    "----------------------------",
+    "  Save IMG original...   ^S ", "  Save IMG as shown...  \001^S ",
+    "----------------------------",
+    "  Print...               ^P ",
+    "----------------------------", "  Quit                   ^Q "
 };
 static const char *view_items[] = {
-    "  Real size / 100% ^1 ", "  Fit to window    ^2 ",
-    "  Zoom in           + ", "  Zoom out          - ", "---------------------",
-    "  Previous page    ^B ", "  Next page        ^N ", "  First page  Clr/Home",
-    "  Last page   Sh+Home ", "---------------------", "  Cycle windows    ^W "
+    "  Real size / 100%       ^1 ", "  Fit to window          ^2 ",
+    "  Zoom in                 + ", "  Zoom out                - ",
+    "----------------------------",
+    "  Previous page          ^B ", "  Next page              ^N ",
+    "  First page       Clr/Home ", "  Last page       \001Clr/Home ",
+    "----------------------------", "  Cycle windows          ^W "
 };
-static const char *opt_items[] = { "  Preferences...   ^E " };
+static const char *pic_items[] = {
+    "  Duplicate              ^D ", "  Dithering...           ^T ",
+    "  Reduce colours...      ^K ", "  Resize...              ^R ",
+    "  Count colours          ^I ",
+    "----------------------------",
+    "  Load palette...        ^L ", "  Save palette...       \001^L ",
+    "----------------------------",
+    "  Share one palette      ^G "
+};
+static const char *opt_items[] = { "  Preferences...         ^E " };
 
 OBJECT *build_menu(void)
 {
     int i, idx, x, ncol = scr_w / (cell_w ? cell_w : 8);
-    int tx[4];
-    const char **lists[4];
-    int counts[4];
+    int tx[NMENUS];
+    const char **lists[NMENUS];
+    int counts[NMENUS];
 
     lists[0] = desk_items; counts[0] = 8;
     lists[1] = file_items; counts[1] = 9;
     lists[2] = view_items; counts[2] = 11;
-    lists[3] = opt_items;  counts[3] = 1;
+    lists[3] = pic_items;  counts[3] = 10;
+    lists[4] = opt_items;  counts[4] = 1;
 
     obj_add(menu, 0, -1, G_IBOX, 0, 0, 0L, 0, 0, ncol, 25);
     obj_add(menu, 1, 0, G_BOX, 0, 0, 0x00001100L, 0, 0, ncol, 0x0201);
     x = 0;
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < NMENUS; i++) {
         tx[i] = x;
         x += (int)strlen(titles[i]);
     }
     obj_add(menu, 2, 1, G_IBOX, 0, 0, 0L, 2, 0, x, 0x0301);
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < NMENUS; i++)
         obj_add(menu, 3 + i, 2, G_TITLE, 0, 0, (long)titles[i], tx[i], 0,
                 (int)strlen(titles[i]), 0x0301);
-    obj_add(menu, 7, 0, G_IBOX, 0, 0, 0L, 0, 0x0301, ncol, 19);
-    idx = 8;
-    for (i = 0; i < 4; i++) {
+    obj_add(menu, 3 + NMENUS, 0, G_IBOX, 0, 0, 0L, 0, 0x0301, ncol, 19);
+    idx = 4 + NMENUS;
+    for (i = 0; i < NMENUS; i++) {
         int k, w = 0, box = idx, bx = 2 + tx[i];
         for (k = 0; k < counts[i]; k++)
             if ((int)strlen(lists[i][k]) > w)
                 w = (int)strlen(lists[i][k]);
         if (bx + w > ncol)
             bx = ncol - w;
-        obj_add(menu, idx++, 7, G_BOX, 0, 0, 0x00FF1100L, bx, 0, w, counts[i]);
+        obj_add(menu, idx++, 3 + NMENUS, G_BOX, 0, 0, 0x00FF1100L, bx, 0, w, counts[i]);
         for (k = 0; k < counts[i]; k++) {
             int sep = lists[i][k][0] == '-';
             obj_add(menu, idx++, box, G_STRING, 0, sep ? DISABLED : 0,
@@ -109,7 +130,7 @@ void build_progress(OBJECT *t, char *text, char *stat)
 {
     /* bar colour: blue where the first 16 pens can't be redefined by a
        picture's palette (256 colours, true colour), black otherwise    */
-    long fill = (scr_planes >= 8) ? 0x00001174L : 0x00001171L;
+    long fill = (scr_planes >= 8 && prefs.keep_sys) ? 0x00001174L : 0x00001171L;
     int bak = aes_3d ? FL3DBAK : 0;
     obj_add(t, 0, -1, G_BOX, bak, 0, aes_3d ? 0x00001100L : 0x00011100L, 0, 0, 100, 60);
     obj_add(t, 1, 0, G_STRING, 0, 0, (long)text, 8, 8, 80, cell_h);
@@ -238,6 +259,8 @@ static const PITEM pitems[] = {
     { 13, "Floyd-S.",    PF(prt_dither), DITH_FS, 0 },
     { 13, "Atkinson",    PF(prt_dither), DITH_ATKINSON, 0 },
     { 13, "Ordered",     PF(prt_dither), DITH_ORDERED, 0 },
+    { 14, "Paletted pics", -1, 0, 0 },
+    { 14, "Dither them on 256+ colour screens", PF(dither_pal), -1, 0 },
     { 15, "Save",        -1, 0, PB_SAVE },
     { 15, "Apply",       -1, 0, PB_APPLY },
     { 15, "Close",       -1, 0, PB_CLOSE },
