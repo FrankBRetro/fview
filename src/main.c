@@ -84,24 +84,34 @@ int file_select(char *path, char *name, const char *title)
 /* --------------------------------------------------------- the display */
 
 /* The pens a picture's palette may not take. Whatever the settings, the
- * GEM desktop and menus stay readable: pens 0 and 1 (white and black,
- * the menu bar, window frames and text) are never redefined, nor are 8
- * and 9 (the greys 3D objects are drawn with) on 16+ colour screens.
+ * GEM desktop and menus stay readable. With *Keep menu pens* on, pens 0
+ * and 1 (white and black: the menu bar, window frames and text) are never
+ * redefined, nor are 8 and 9 (the greys 3D objects are drawn with) on
+ * 16+ colour screens. With it off a picture may use them too, but the
+ * ditherer gives them its lightest and darkest colours (and the nearest
+ * greys), adding white and black if it has no contrast (ui_pix).
  * Keep GEM colours keeps the first 16 pens on 256 colour screens.     */
 void disp_reserved_for(DISPINFO *d, int palmode)
 {
     int i, n = d->truecolor ? 0 : (scr_planes >= 8 ? 256 : 1 << scr_planes);
     memset(d->reserved, 0, sizeof d->reserved);
     d->palmode = palmode;
+    d->ui_n = 0;
     for (i = 0; i < n; i++) {
         int pix = vdi2pix(i, scr_planes);
+        int ui = i < 2 || (aes_3d && n >= 16 && (i == 8 || i == 9));
         if (d->fixed_palette || palmode == PAL_SYSTEM)
             d->reserved[pix] = 1;
-        else if (i < 2 || (aes_3d && n >= 16 && (i == 8 || i == 9)))
-            d->reserved[pix] = 1;          /* always: the UI must stay legible */
         else if (prefs.keep_sys && n >= 256 && i < 16)
             d->reserved[pix] = 1;
+        else if (ui && prefs.ui_pens)
+            d->reserved[pix] = 1;
+        else if (ui)
+            d->ui_pix[i < 2 ? i : i - 6] = pix;
     }
+    if (!d->fixed_palette && palmode != PAL_SYSTEM && !prefs.ui_pens &&
+        !(prefs.keep_sys && n >= 256))
+        d->ui_n = (aes_3d && n >= 16) ? 4 : (n >= 2 ? 2 : 0);
 }
 
 void disp_setup_reserved(void)

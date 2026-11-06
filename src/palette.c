@@ -691,6 +691,7 @@ int shared_palette(const IMAGE *const *ims, int n, const DISPINFO *d, u8 *pal_by
     u32 *hist = calloc(32768L, sizeof(u32));
     u8 cols[256 * 3];
     int ncol = d->planes >= 8 ? 256 : 1 << d->planes, nfree = 0, i, k, got;
+    int slot[256];
     long total = 0, base = 0;
     if (!hist)
         return E_NOMEM;
@@ -708,13 +709,23 @@ int shared_palette(const IMAGE *const *ims, int n, const DISPINFO *d, u8 *pal_by
             nfree++;
     memcpy(pal_by_pix, d->sysrgb, 256 * 3);
     got = nfree ? quant_from_hist(hist, nfree, cols, 0) : 0;
+    /* UI pens free: the lightest and darkest go there (white and black
+       added if the pictures have no contrast), see ui_arrange         */
+    if (got >= 0 && ui_needs_bw(d, cols, got)) {
+        if (got > nfree - 2)
+            got = nfree > 2 ? quant_from_hist(hist, nfree - 2, cols, 0) : 0;
+        if (got >= 0) {
+            memset(cols + got * 3, 255, 3);
+            memset(cols + got * 3 + 3, 0, 3);
+            got += 2;
+        }
+    }
     free(hist);
     if (got < 0)
         return E_NOMEM;
-    for (i = 0, k = 0; i < ncol && k < got; i++)
-        if (!d->reserved[i]) {
-            memcpy(pal_by_pix + i * 3, cols + k * 3, 3);
-            k++;
-        }
+    ui_arrange(d, ncol, cols, got, slot);
+    for (k = 0; k < got; k++)
+        if (slot[k] >= 0)
+            memcpy(pal_by_pix + slot[k] * 3, cols + k * 3, 3);
     return E_OK;
 }

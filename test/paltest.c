@@ -50,6 +50,23 @@ int main(int argc, char **argv)
       if (shared_palette(v, 2, &d, sp, 0)) return 1;
       k = 0; for (i = 16; i < 256; i++) if (sp[i*3]|sp[i*3+1]|sp[i*3+2]) k++;
       printf("shared palette: %d non-black free entries\n", k); }
+    /* UI pens free (Keep menu pens off): 16 colours, 3D greys at 8/9 */
+    { static const char *nm[3] = { "gradient", "dark", "16-col indexed" };
+      int t, ok = 1;
+      for (t = 0; t < 3; t++) {
+        DISPINFO du; IMAGE ti = im; u8 po[768]; DITHER *dt; int l0, l1;
+        memset(&du, 0, sizeof du); du.planes = 4; du.palmode = PAL_OPTIMISE;
+        du.ui_n = 4; du.ui_pix[0] = 0; du.ui_pix[1] = 15; du.ui_pix[2] = 8; du.ui_pix[3] = 9;
+        if (t == 1) { ti.px = malloc(960*200); for (x = 0; x < 960*200; x++) ti.px[x] = (u8)(20 + (x % 40)); }
+        if (t == 2) ti = out;      /* 16 colours: exact, all pens used */
+        dt = dith_new(&ti, 320, 200, &du, DITH_FS, 1, 0, po, 0);
+        if (!dt) { puts("dith_new failed"); return 1; }
+        l0 = (77*po[0]+150*po[1]+29*po[2])>>8; l1 = (77*po[45]+150*po[46]+29*po[47])>>8;
+        printf("ui pens %s: pen0 luma %d pen1 luma %d  grey8 %d,%d,%d\n", nm[t], l0, l1, po[24], po[25], po[26]);
+        if (l0 - l1 < UI_CONTRAST) ok = 0;
+        dith_free(dt);
+      }
+      printf("ui pens legible: %s\n", ok ? "OK" : "FAIL"); }
     (void)argc; (void)argv;
     return 0;
 }

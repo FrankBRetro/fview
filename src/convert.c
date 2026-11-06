@@ -287,6 +287,7 @@ int convert_picture(const char *path, int ftype, const char *out, int xfmt,
         } else {
             d.palmode = pf.palmode;
             memset(d.reserved, 0, sizeof d.reserved);  /* a file needs no UI colours */
+            d.ui_n = 0;
         }
         d.chunky = 0;                           /* we want standard planes */
         pg->phase = 1;

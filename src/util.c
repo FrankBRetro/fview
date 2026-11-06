@@ -22,6 +22,7 @@ void prefs_default(PREFS *p)
     p->smooth        = 1;
     p->palmode       = PAL_OPTIMISE;
     p->keep_sys      = 1;
+    p->ui_pens       = 1;
     p->bg            = BG_WHITE;
     p->gif_trans     = 1;
     p->png_alpha     = 1;

@@ -87,6 +87,9 @@ typedef struct {
     char smooth;            /* box-filter when shrinking                 */
     char palmode;           /* PAL_OPTIMISE / PAL_SYSTEM                 */
     char keep_sys;          /* keep GEM UI colours when optimising       */
+    char ui_pens;           /* never give pens 0/1 (and 3D greys) to a
+                               picture; off: a picture may use them, its
+                               lightest/darkest colours go there          */
     char bg;                /* transparency / alpha background           */
     /* gif */
     char gif_trans;         /* honour transparency                        */
@@ -135,6 +138,10 @@ typedef struct {
     int  fixed_palette;     /* hardware palette cannot be changed         */
     u8   sysrgb[256 * 3];   /* current palette, indexed by pixel value    */
     u8   reserved[256];     /* 1 = pixel value may not be redefined       */
+    int  ui_n;              /* pixel values of the UI pens 0, 1, 8, 9 that */
+    int  ui_pix[4];         /* a picture may take: its lightest and darkest
+                               colours (and greys) go there so menus stay
+                               readable (0 = none)                        */
     /* true colour packing: bit numbers in the pixel for each channel,
        most significant first, as reported by vq_scrninfo                 */
     int  bytespp;           /* 2, 3 or 4                                  */
@@ -263,6 +270,12 @@ DITHER *dith_new(const IMAGE *im, long tw, long th, const DISPINFO *d,
    true colour -> packed device pixels (bytespp each)                     */
 void dith_row(DITHER *dt, long y, u8 *out);
 void dith_free(DITHER *dt);
+/* UI pens (DISPINFO ui_pix): white and black are added when the colours
+   have less light/dark contrast than this; slot[] gets the pixel value
+   of each colour, the UI pens getting the lightest, darkest and greys */
+#define UI_CONTRAST 128
+int  ui_needs_bw(const DISPINFO *d, const u8 *cols, int got);
+void ui_arrange(const DISPINFO *d, int ncol, const u8 *cols, int got, int *slot);
 
 /* render a whole image into VDI standard format (palette) or packed device
  * format (true colour). Buffer comes from res_alloc(RB_DISP).            */

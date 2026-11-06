@@ -17,7 +17,7 @@ typedef struct { const char *key; int off; } PKEY;
 #define K(m) { #m, offsetof(PREFS, m) }
 static const PKEY keys[] = {
     K(start_iconified), K(use_workers), K(dither), K(serpentine), K(zoom),
-    K(smooth), K(palmode), K(keep_sys), K(bg), K(gif_trans), K(png_alpha),
+    K(smooth), K(palmode), K(keep_sys), K(ui_pens), K(bg), K(gif_trans), K(png_alpha),
     K(iff_mask), K(iff_ham), K(img_syspal), K(img_vdiorder), K(jpg_grey_mono),
     K(tabw), K(wrap), K(charset), K(md_markup), K(rtf_pict), K(pdf_zoom),
     K(pdf_gfx), K(pdf_imgbox), K(prt_scale), K(prt_dither), K(prt_header),
@@ -235,12 +235,13 @@ void prefs_click(int mx, int my)
     {
         PREFS old = prefs;
         int rerender = old.dither != edit.dither || old.serpentine != edit.serpentine ||
-                       old.palmode != edit.palmode || old.keep_sys != edit.keep_sys ||
+                       old.palmode != edit.palmode || old.keep_sys != edit.keep_sys || old.ui_pens != edit.ui_pens ||
                        old.smooth != edit.smooth;
         int relayout = old.pdf_zoom != edit.pdf_zoom || old.pdf_gfx != edit.pdf_gfx ||
                        old.pdf_imgbox != edit.pdf_imgbox;
         prefs = edit;
-        if (old.keep_sys != prefs.keep_sys || old.palmode != prefs.palmode) {
+        if (old.keep_sys != prefs.keep_sys || old.ui_pens != prefs.ui_pens ||
+            old.palmode != prefs.palmode) {
             extern void disp_setup_reserved(void);
             disp_setup_reserved();
         }

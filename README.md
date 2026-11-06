@@ -191,10 +191,17 @@ dropped on their own).
   palette maps straight through). Preferences › *Paletted pics: Dither
   them on 256+ colour screens* turns dithering back on; the Dithering
   window can change it per window.
-- **Legible menus with any palette**: picture palettes never change pens
-  0 and 1 (white and black), nor pens 8 and 9 on 3D AES screens with 16 or
-  more colours, so menus, window frames and dialogs stay readable whatever
-  palette a picture or a palette file brings.
+- **Legible menus with any palette**: by default picture palettes never
+  change pens 0 and 1 (white and black), nor pens 8 and 9 on 3D AES screens
+  with 16 or more colours, so menus, window frames and dialogs stay
+  readable whatever palette a picture or a palette file brings. Turn off
+  Preferences › *Menu colours: Keep menu pens for the desktop* and pictures
+  may use every pen; FView then rearranges the palette so pen 0 gets the
+  picture's lightest colour, pen 1 its darkest and pens 8/9 the nearest
+  greys. If a picture has too little contrast for that (a dark night shot,
+  say), white and black are added to its colours, so the menus still read.
+  The shared palette works the same way. *Keep GEM colours* on a
+  256-colour screen still keeps the first 16 pens.
 - **Long text**: laying out a large text file (over about 24 KB) after a
   window resize runs with a progress panel and can be cancelled, instead
   of freezing the desktop.
@@ -245,7 +252,7 @@ MiNT workers, dither method and serpentine, opening zoom, smooth shrink,
 per-picture/system palette, keep GEM colours, transparency background,
 GIF transparency, PNG alpha, IFF mask and HAM/EHB, IMG system palette and
 XIMG pen order, JPEG grey on mono, tab width, wrapping, 8-bit text charset,
-Markdown markup, RTF pictures, PDF zoom/graphics/image boxes, dithering of paletted pictures on 256+ colour screens, and print
+Markdown markup, RTF pictures, PDF zoom/graphics/image boxes, dithering of paletted pictures on 256+ colour screens, keeping the menu pens, and print
 size/dither/header. Format options apply to files opened afterwards.
 
 ## Step log
@@ -281,7 +288,8 @@ No Atari toolchain or emulator was available where this was written, so:
   16-bit depths, lossless IMG round trips (original and dithered), and the
   text/PDF renderers through a stub VDI, including a 33-page LaTeX PDF and
   a PDF using compressed object streams. `paltest` checks colour counts,
-  reduction, palette file round trips (JASC, ACT, GPL) and shared palettes.
+  reduction, palette file round trips (JASC, ACT, GPL), shared palettes and
+  the light/dark arrangement of the menu pens.
   Run under AddressSanitizer.
 - **Type-checked for the 68000** against the real mintlib and gemlib
   headers (clang M68k backend, `-Wall`, no warnings).

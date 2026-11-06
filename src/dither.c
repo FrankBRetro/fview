@@ -211,6 +211,110 @@ static void add_hist(u32 *hist, const u8 *rgb, long n)
     }
 }
 
+/* 15-bit histogram of a picture, every other pixel on big ones; 0 on
+   failure or cancel                                                   */
+static u32 *make_hist(const IMAGE *im, PROG *pg)
+{
+    u32 *hist = calloc(32768L, sizeof(u32));
+    long x, y, step;
+    if (!hist)
+        return 0;
+    step = (im->w * im->h > 200000L) ? 2 : 1;
+    for (y = 0; y < im->h; y += step) {
+        if (im->type == IT_INDEXED) {
+            const u8 *s = im->px + y * im->stride;
+            for (x = 0; x < im->w; x += step) {
+                const u8 *c = im->pal + s[x] * 3;
+                hist[((c[0] >> 3) << 10) | ((c[1] >> 3) << 5) | (c[2] >> 3)]++;
+            }
+        } else if (step == 1)
+            add_hist(hist, im->px + y * im->stride, im->w);
+        else {
+            const u8 *s = im->px + y * im->stride;
+            for (x = 0; x < im->w; x += 2, s += 6)
+                add_hist(hist, s, 1);
+        }
+        if ((y & 31) == 0 && prog_step(pg, y, im->h * 2)) {
+            free(hist);
+            return 0;
+        }
+    }
+    return hist;
+}
+
+/* ------------------------------------------------- UI pens in a picture */
+
+static int luma(const u8 *c) { return (77 * c[0] + 150 * c[1] + 29 * c[2]) >> 8; }
+
+/* the UI pens (d->ui_pix: pens 0, 1, then the 3D greys 8 and 9) that a
+   picture's palette may take                                          */
+static int ui_free(const DISPINFO *d, int j, int ncol)
+{
+    return j < d->ui_n && d->ui_pix[j] < ncol && !d->reserved[d->ui_pix[j]];
+}
+
+int ui_needs_bw(const DISPINFO *d, const u8 *cols, int got)
+{
+    int k, lo = 255, hi = 0;
+    int ncol = d->planes >= 8 ? 256 : 1 << d->planes;
+    if (d->truecolor || !ui_free(d, 0, ncol) || !ui_free(d, 1, ncol))
+        return 0;
+    for (k = 0; k < got; k++) {
+        int l = luma(cols + k * 3);
+        if (l < lo) lo = l;
+        if (l > hi) hi = l;
+    }
+    return hi - lo < UI_CONTRAST;
+}
+
+void ui_arrange(const DISPINFO *d, int ncol, const u8 *cols, int got, int *slot)
+{
+    static const u8 grey[2][3] = { { 176, 176, 176 }, { 96, 96, 96 } };
+    u8 taken[256];
+    int j, k, i;
+    memset(taken, 0, sizeof taken);
+    for (k = 0; k < got; k++)
+        slot[k] = -1;
+    for (j = 0; j < 4; j++) {
+        int best = -1;
+        long bd = 0x7fffffffL;
+        if (!ui_free(d, j, ncol))
+            continue;
+        for (k = 0; k < got; k++) {
+            const u8 *c = cols + k * 3;
+            long dd;
+            if (slot[k] >= 0)
+                continue;
+            if (j == 0)
+                dd = 255 - luma(c);            /* pen 0: the lightest */
+            else if (j == 1)
+                dd = luma(c);                  /* pen 1: the darkest  */
+            else {
+                long dr = c[0] - grey[j - 2][0], dg = c[1] - grey[j - 2][1],
+                     db = c[2] - grey[j - 2][2];
+                dd = dr * dr + dg * dg + db * db;
+            }
+            if (dd < bd) {
+                bd = dd;
+                best = k;
+            }
+        }
+        if (best < 0)
+            break;
+        slot[best] = d->ui_pix[j];
+        taken[d->ui_pix[j]] = 1;
+    }
+    for (k = 0, i = 0; k < got; k++) {
+        if (slot[k] >= 0)
+            continue;
+        while (i < ncol && (d->reserved[i] || taken[i]))
+            i++;
+        if (i >= ncol)
+            break;
+        slot[k] = i++;
+    }
+}
+
 DITHER *dith_new(const IMAGE *im, long tw, long th, const DISPINFO *d,
                  int method, int serp, int smooth, u8 *pal_out, PROG *pg)
 {
@@ -268,7 +372,7 @@ DITHER *dith_new(const IMAGE *im, long tw, long th, const DISPINFO *d,
 
     if (nfree) {
         u8 newc[256 * 3];
-        int got = 0, k;
+        int got = 0, k, slot[256];
 
         if (im->type == IT_INDEXED && im->ncolors <= nfree) {
             /* exact colours fit */
@@ -276,45 +380,45 @@ DITHER *dith_new(const IMAGE *im, long tw, long th, const DISPINFO *d,
             got = im->ncolors;
             dt->exact = 1;
         } else {
-            u32 *hist = calloc(32768L, sizeof(u32));
-            long y, step;
+            u32 *hist = make_hist(im, pg);
             if (!hist)
                 goto fail;
-            step = (im->w * im->h > 200000L) ? 2 : 1;
-            for (y = 0; y < im->h; y += step) {
-                if (im->type == IT_INDEXED) {
-                    const u8 *s = im->px + y * im->stride;
-                    for (x = 0; x < im->w; x += step) {
-                        const u8 *c = im->pal + s[x] * 3;
-                        hist[((c[0] >> 3) << 10) | ((c[1] >> 3) << 5) | (c[2] >> 3)]++;
-                    }
-                } else if (step == 1)
-                    add_hist(hist, im->px + y * im->stride, im->w);
-                else {
-                    const u8 *s = im->px + y * im->stride;
-                    for (x = 0; x < im->w; x += 2, s += 6)
-                        add_hist(hist, s, 1);
-                }
-                if ((y & 31) == 0 && prog_step(pg, y, im->h * 2)) {
-                    free(hist);
-                    goto fail;
-                }
-            }
             got = median_cut(hist, nfree, newc, 0);
             free(hist);
             if (got < 0)
                 goto fail;
         }
-        /* assign the new colours to the free pixel values */
-        for (i = 0, k = 0; i < ncol && k < got; i++) {
-            if (d->reserved[i])
+        /* the picture may take the UI pens: if it has no light and dark
+           colour for them, make room for white and black               */
+        if (ui_needs_bw(d, newc, got)) {
+            if (got > nfree - 2) {
+                u32 *hist;
+                dt->exact = 0;
+                got = 0;
+                if (nfree > 2) {
+                    if (!(hist = make_hist(im, pg)))
+                        goto fail;
+                    got = median_cut(hist, nfree - 2, newc, 0);
+                    free(hist);
+                    if (got < 0)
+                        goto fail;
+                }
+            }
+            memset(newc + got * 3, 255, 3);
+            memset(newc + got * 3 + 3, 0, 3);
+            got += 2;
+        }
+        /* give the new colours free pixel values, the UI pens first */
+        ui_arrange(d, ncol, newc, got, slot);
+        for (k = 0; k < got; k++) {
+            i = slot[k];
+            if (i < 0)
                 continue;
             memcpy(pal_out + i * 3, newc + k * 3, 3);
             if (dt->exact)
                 dt->exmap[k] = dt->npal;
             memcpy(dt->prgb + dt->npal * 3, newc + k * 3, 3);
             dt->ppix[dt->npal++] = i;
-            k++;
         }
     }
     if (dt->exact && (tw != im->w || th != im->h) && dt->smooth)

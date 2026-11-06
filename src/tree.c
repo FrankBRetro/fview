@@ -261,9 +261,11 @@ static const PITEM pitems[] = {
     { 13, "Ordered",     PF(prt_dither), DITH_ORDERED, 0 },
     { 14, "Paletted pics", -1, 0, 0 },
     { 14, "Dither them on 256+ colour screens", PF(dither_pal), -1, 0 },
-    { 15, "Save",        -1, 0, PB_SAVE },
-    { 15, "Apply",       -1, 0, PB_APPLY },
-    { 15, "Close",       -1, 0, PB_CLOSE },
+    { 15, "Menu colours", -1, 0, 0 },
+    { 15, "Keep menu pens for the desktop", PF(ui_pens), -1, 0 },
+    { 16, "Save",        -1, 0, PB_SAVE },
+    { 16, "Apply",       -1, 0, PB_APPLY },
+    { 16, "Close",       -1, 0, PB_CLOSE },
 };
 #define NPITEMS ((int)(sizeof pitems / sizeof pitems[0]))
 
