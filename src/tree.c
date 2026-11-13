@@ -26,6 +26,56 @@ static void obj_add(OBJECT *t, int idx, int parent, int type, int flags,
     }
 }
 
+/* --------------------------------------------------------- dialog trees */
+
+#ifndef WHITEBAK
+#define WHITEBAK 0x0040
+#endif
+
+/* Turn a dialog tree laid out in characters into pixels, the same way on
+ * every AES:
+ * - rows on a 16-pixel font get 2 more pixels each, so neighbouring
+ *   buttons' borders (outside the object on TOS, MultiTOS and MagiC 2D)
+ *   don't touch;
+ * - on/off and radio buttons (SELECTABLE, not EXIT) become MagiC-style
+ *   check boxes and round radio buttons where the AES draws them
+ *   (appl_getinfo 13: MagiC 3 and later, XaAES); elsewhere they stay
+ *   buttons that go black when selected;
+ * - other buttons get a little air above and below.
+ * The root's own size is in characters too.                            */
+void tree_finish(OBJECT *t, int n)
+{
+    int i, k, extra = cell_h >= 16 ? 2 : 0, rows = t[0].ob_height, right = 0;
+    for (i = 0; i < n; i++)
+        rsrc_obfix(t, i);
+    for (i = 1; i < n; i++) {
+        OBJECT *o = &t[i];
+        if (o->ob_type == G_BUTTON && aes_xbutton && (o->ob_flags & SELECTABLE) &&
+            !(o->ob_flags & (EXIT | TOUCHEXIT | DEFAULT))) {
+            /* MagiC draws the box, then the text 3 characters in: one
+               character wider than the button was, and the rest of the
+               row moves along                                          */
+            o->ob_state = (o->ob_state & 0x00FF) | WHITEBAK | 0xFF00;
+            for (k = 1; k < n; k++)       /* plus half a character of gap */
+                if (t[k].ob_y / cell_h == o->ob_y / cell_h && t[k].ob_x > o->ob_x)
+                    t[k].ob_x += cell_w + cell_w / 2;
+            o->ob_width += cell_w;
+        } else if (o->ob_type == G_BUTTON) {
+            o->ob_y += 2;                       /* a little air */
+            o->ob_height -= 2;
+        }
+    }
+    for (i = 1; i < n; i++) {
+        OBJECT *o = &t[i];
+        o->ob_y += (o->ob_y / cell_h) * extra;
+        if (o->ob_x + o->ob_width > right)
+            right = o->ob_x + o->ob_width;
+    }
+    t[0].ob_height += rows * extra;
+    if (t[0].ob_width < right + cell_w)
+        t[0].ob_width = right + cell_w;
+}
+
 /* ----------------------------------------------------------------- menu */
 
 static OBJECT menu[MENU_NOBJ];
@@ -275,8 +325,11 @@ static int pitem_of[NPITEMS + 2];     /* item of each object           */
 
 OBJECT *build_prefs(void)
 {
-    int i, n = 1, xcol = 0, lastrow = -1, w = 0;
-    const int labw = 14;
+    int i, n = 1, xcol = 0, lastrow = -1, w = 0, labw = 0;
+    for (i = 0; i < NPITEMS; i++)              /* labels: the longest + 2 */
+        if (pitems[i].field < 0 && !pitems[i].kind &&
+            (int)strlen(pitems[i].label) + 4 > labw)
+            labw = (int)strlen(pitems[i].label) + 4;
     obj_add(ptree, 0, -1, G_BOX, 0, OUTLINED, 0x00021100L, 0, 0, 10, 18);
     for (i = 0; i < NPITEMS; i++) {
         const PITEM *p = &pitems[i];
@@ -291,7 +344,7 @@ OBJECT *build_prefs(void)
             obj_add(ptree, n, 0, G_STRING, 0, 0, (long)p->label, xcol, p->row + 1, len, 1);
             xcol = labw;
         } else if (p->kind) {
-            int bx = p->kind == PB_SAVE ? 20 : p->kind == PB_APPLY ? 31 : 42;
+            int bx = labw + (p->kind == PB_SAVE ? 4 : p->kind == PB_APPLY ? 15 : 26);
             obj_add(ptree, n, 0, G_BUTTON, SELECTABLE | EXIT | (p->kind == PB_SAVE ? DEFAULT : 0),
                     0, (long)p->label, bx, p->row + 1, 9, 1);
         } else {
@@ -305,14 +358,7 @@ OBJECT *build_prefs(void)
     ptree[n - 1].ob_flags |= LASTOB;
     ptree[0].ob_width = w + 1;
     ptree[0].ob_height = pitems[NPITEMS - 1].row + 3;
-    for (i = 0; i < n; i++)
-        rsrc_obfix(ptree, i);
-    /* a little air around buttons */
-    for (i = 1; i < n; i++)
-        if (ptree[i].ob_type == G_BUTTON) {
-            ptree[i].ob_y += 2;
-            ptree[i].ob_height -= 2;
-        }
+    tree_finish(ptree, n);
     return ptree;
 }
 

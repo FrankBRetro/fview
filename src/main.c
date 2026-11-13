@@ -45,6 +45,8 @@ int  quitting;
 FONTSET scrfonts;
 int  aes_iconify;
 int  aes_3d;
+int  aes_xbutton;
+int  aes_magic;
 int  screen_interleaved;
 
 static OBJECT *menu;
@@ -516,10 +518,11 @@ static void cycle_windows(void)
 {
     VWIN *top = win_top();
     int i, start = 0;
-    if (top)
-        start = (int)(top - wins) + 1;
-    for (i = 0; i < MAXWIN; i++) {
-        VWIN *w = &wins[(start + i) % MAXWIN];
+    for (i = 0; top && i < nwins; i++)
+        if (wins[i] == top)
+            start = i + 1;
+    for (i = 0; i < nwins; i++) {
+        VWIN *w = wins[(start + i) % nwins];
         if (w->used && w->handle > 0 && w != top) {
             wind_set(w->handle, WF_TOP, 0, 0, 0, 0);
             break;
@@ -787,6 +790,7 @@ void gui_dispatch_message(short *msg)
         case WM_TOPPED: prefs_top(); break;
         case WM_CLOSED: prefs_close(); break;
         case WM_MOVED:  prefs_moved(r); break;
+        case WM_BOTTOMED: wind_set(msg[3], WF_BOTTOM, 0, 0, 0, 0); break;
         }
         return;
     }
@@ -796,6 +800,7 @@ void gui_dispatch_message(short *msg)
         case WM_TOPPED: picdlg_top(); break;
         case WM_CLOSED: picdlg_close(); break;
         case WM_MOVED:  picdlg_moved(r); break;
+        case WM_BOTTOMED: wind_set(msg[3], WF_BOTTOM, 0, 0, 0, 0); break;
         }
         return;
     }
@@ -825,6 +830,7 @@ void gui_dispatch_message(short *msg)
         case WM_TOPPED: wind_set(msg[3], WF_TOP, 0, 0, 0, 0); break;
         case WM_MOVED:  wind_set_grect(msg[3], WF_CURRXYWH, r); break;
         case WM_CLOSED: if (dw->job) job_cancel(dw->job); break;
+        case WM_BOTTOMED: wind_set(msg[3], WF_BOTTOM, 0, 0, 0, 0); break;
         }
         return;
     }
@@ -1055,12 +1061,25 @@ static void open_main_window(void)
         win_post_redraw(mainw);
 }
 
+/* appl_getinfo is there: AES 4.0 and later, MagiC, or ?AGI (WINX etc.) */
+static int have_agi(void)
+{
+    return _AESversion >= 0x0400 || aes_magic || appl_find("?AGI") >= 0;
+}
+
+/* MagiC 3+ (and XaAES) draw check boxes and round radio buttons for
+   G_BUTTONs with WHITEBAK: appl_getinfo(13), fourth word, bit 2       */
+static int detect_xbutton(void)
+{
+    short o1 = 0, o2 = 0, o3 = 0, o4 = 0;
+    return have_agi() && appl_getinfo(13, &o1, &o2, &o3, &o4) && (o4 & 4);
+}
+
 /* 3D objects: AES 3.40 (TOS 4) and later, or whatever appl_getinfo says */
 static int detect_3d(void)
 {
     short o1 = 0, o2 = 0, o3 = 0, o4 = 0;
-    if ((_AESversion >= 0x0400 || appl_find("?AGI") >= 0) &&
-        appl_getinfo(13, &o1, &o2, &o3, &o4))
+    if (have_agi() && appl_getinfo(13, &o1, &o2, &o3, &o4))
         return o1 != 0;
     return _AESversion >= 0x0340;
 }
@@ -1072,7 +1091,7 @@ static int detect_iconify(void)
        appl_getinfo says */
     if (_AESversion >= 0x0410)
         return 1;
-    if (_AESversion < 0x0400 && appl_find("?AGI") < 0)
+    if (!have_agi())
         return 0;
     if (!appl_getinfo(11, &o1, &o2, &o3, &o4))
         return 0;
@@ -1114,16 +1133,22 @@ int main(int argc, char **argv)
     disp_init();
     job_init_system();
     fonts_load(&scrfonts, vdih, scr_sysfonts);   /* GDOS fonts, if any */
+    {
+        long v;
+        aes_magic = Getcookie(0x4D616758L /* MagX */, &v) == C_FOUND;
+    }
     aes_iconify = detect_iconify();
     aes_3d = detect_3d();
+    aes_xbutton = detect_xbutton();
     disp_setup_reserved();                    /* again: 3D greys are kept */
     fv_temp_dir();                            /* note the start folder now */
+    dbg("MagiC %d, check buttons %d", aes_magic, aes_xbutton);
     dbg("AES %04x apps %d iconify %d 3d %d screen %dx%d planes %d truecolor %d cell %dx%d",
         _AESversion, _AESnumapps, aes_iconify, aes_3d, scr_w, scr_h, scr_planes,
         dinfo.truecolor, cell_w, cell_h);
 
     /* tell the AES what we understand */
-    if (_AESversion >= 0x0400)
+    if (_AESversion >= 0x0400 || aes_magic)
         shel_write(9, 1, 0, 0L, 0L);          /* AP_TERM */
     if (_AESnumapps != 1 || _AESversion >= 0x0400)
         menu_register(ap_id, "  FView");

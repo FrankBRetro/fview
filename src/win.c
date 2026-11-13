@@ -32,7 +32,9 @@ static int share_active(void)
 }
 
 
-VWIN wins[MAXWIN];
+VWIN *wins[MAXWIN];
+int   nwins;
+static int progdlg_reclaim(void);
 
 #define WKIND_DOC (NAME | CLOSER | FULLER | MOVER | INFO | SIZER | UPARROW | \
                    DNARROW | VSLIDE | LFARROW | RTARROW | HSLIDE)
@@ -54,14 +56,18 @@ const char *win_base_name(const char *p) { return base_name(p); }
 VWIN *win_new(void)
 {
     int i;
-    for (i = 0; i < MAXWIN; i++)
-        if (!wins[i].used) {
-            memset(&wins[i], 0, sizeof(VWIN));
-            wins[i].used = 1;
-            wins[i].zoom = prefs.zoom;
-            return &wins[i];
-        }
-    return 0;
+    for (i = 0; i < nwins; i++)
+        if (!wins[i]->used)
+            break;
+    if (i == nwins) {
+        if (nwins >= MAXWIN || !(wins[nwins] = malloc(sizeof(VWIN))))
+            return 0;
+        nwins++;
+    }
+    memset(wins[i], 0, sizeof(VWIN));
+    wins[i]->used = 1;
+    wins[i]->zoom = prefs.zoom;
+    return wins[i];
 }
 
 VWIN *win_find(int handle)
@@ -69,9 +75,9 @@ VWIN *win_find(int handle)
     int i;
     if (handle <= 0)
         return 0;
-    for (i = 0; i < MAXWIN; i++)
-        if (wins[i].used && wins[i].handle == handle)
-            return &wins[i];
+    for (i = 0; i < nwins; i++)
+        if (wins[i]->used && wins[i]->handle == handle)
+            return wins[i];
     return 0;
 }
 
@@ -111,6 +117,8 @@ int win_open(VWIN *w, int kind)
     w->kind = kind;
     k = kind_flags(w);
     w->handle = wind_create_grect(k, &desk);
+    if (w->handle <= 0 && progdlg_reclaim())
+        w->handle = wind_create_grect(k, &desk);   /* their panels gave way */
     if (w->handle <= 0) {
         w->used = 0;
         alertf("[1][fview: no more windows are|available.][ OK ]");
@@ -280,6 +288,20 @@ static void layout_progress(VWIN *w)
     }
 }
 
+/* how many more windows the AES could create now, up to want */
+static int spare_windows(int want)
+{
+    short h[4];
+    int n = 0, i;
+    if (want > 4)
+        want = 4;
+    while (n < want && (h[n] = wind_create_grect(NAME, &desk)) > 0)
+        n++;
+    for (i = 0; i < n; i++)
+        wind_delete(h[i]);
+    return n;
+}
+
 static void progdlg_open(VWIN *w)
 {
     GRECT wk, r, doc;
@@ -305,6 +327,13 @@ static void progdlg_open(VWIN *w)
     w->pdlg = wind_create_grect(k, &r);
     dbg("progress dialog for window %d: handle %d at %d,%d %dx%d", w->handle,
         w->pdlg, r.g_x, r.g_y, r.g_w, r.g_h);
+    /* the AES's windows are shared by every program (TOS: 7, MagiC: 16
+       unless MAGX.INF says more): a progress panel only gets a window of
+       its own while one more document could still be opened            */
+    if (w->pdlg > 0 && spare_windows(1) < 1) {
+        wind_delete(w->pdlg);
+        w->pdlg = -1;
+    }
     if (w->pdlg <= 0) {
         w->pdlg = 0;                 /* no window: panel in the document */
         return;
@@ -334,14 +363,32 @@ void progdlg_close(VWIN *w)
     w->pdlg = 0;
 }
 
+/* out of windows: busy documents show their progress inside themselves
+   again, freeing their panels' windows; 1 if any was freed            */
+static int progdlg_reclaim(void)
+{
+    int i, n = 0;
+    for (i = 0; i < nwins; i++) {
+        VWIN *v = wins[i];
+        if (v->used && v->pdlg > 0) {
+            progdlg_close(v);
+            if (v->handle > 0 && !v->iconified)
+                win_post_redraw(v);
+            n++;
+        }
+    }
+    dbg("out of windows: %d progress panels moved into their documents", n);
+    return n > 0;
+}
+
 VWIN *win_find_dlg(int handle)
 {
     int i;
     if (handle <= 0)
         return 0;
-    for (i = 0; i < MAXWIN; i++)
-        if (wins[i].used && wins[i].pdlg == handle)
-            return &wins[i];
+    for (i = 0; i < nwins; i++)
+        if (wins[i]->used && wins[i]->pdlg == handle)
+            return wins[i];
     return 0;
 }
 
@@ -858,8 +905,8 @@ static void draw_main(VWIN *w, GRECT *r)
     v_gtext(vdih, w->work.g_x + 8, y, "FView " FV_VERSION " - drop files here");
     vst_effects(vdih, 0);
     y += cell_h + 4;
-    for (i = 0; i < MAXWIN; i++) {
-        VWIN *v = &wins[i];
+    for (i = 0; i < nwins; i++) {
+        VWIN *v = wins[i];
         if (!v->used || v->kind == K_MAIN || v->handle <= 0)
             continue;
         sprintf(line, "%c %-24.24s %s", win_busy(v) ? '*' : ' ', base_name(v->path),
@@ -1460,9 +1507,9 @@ static const char *op_name(int op)
 static void share_done_cleanup(void)
 {
     int i;
-    for (i = 0; i < MAXWIN; i++)
-        if (wins[i].used && wins[i].closing == 2 && !wins[i].job)
-            win_destroy(&wins[i]);
+    for (i = 0; i < nwins; i++)
+        if (wins[i]->used && wins[i]->closing == 2 && !wins[i]->job)
+            win_destroy(wins[i]);
 }
 
 /* a picture's display arrived (load, render or a picture tool) */
@@ -1582,10 +1629,10 @@ void win_job_finished(VWIN *w, JOB *j)
             win_share_update();
             return;
         }
-        for (i = 0; i < MAXWIN; i++)      /* everyone onto the new palette */
-            if (wins[i].used && wins[i].kind == K_IMAGE && wins[i].img.im.px &&
-                wins[i].handle > 0)
-                start_render(&wins[i]);
+        for (i = 0; i < nwins; i++)      /* everyone onto the new palette */
+            if (wins[i]->used && wins[i]->kind == K_IMAGE && wins[i]->img.im.px &&
+                wins[i]->handle > 0)
+                start_render(wins[i]);
         win_redraw_all(w);
         menu_update();
         return;
@@ -1608,10 +1655,10 @@ void win_job_finished(VWIN *w, JOB *j)
                 memset(&dst->disp, 0, sizeof dst->disp);
                 memset(&dst->img, 0, sizeof dst->img);
                 dst->copyno = w->copyno ? w->copyno + 1 : 2;
-                for (i = 0; i < MAXWIN; i++)   /* a number no other copy has */
-                    if (wins[i].used && &wins[i] != dst && &wins[i] != w &&
-                        !strcmp(wins[i].path, w->path) && wins[i].copyno >= dst->copyno)
-                        dst->copyno = wins[i].copyno + 1;
+                for (i = 0; i < nwins; i++)   /* a number no other copy has */
+                    if (wins[i]->used && wins[i] != dst && wins[i] != w &&
+                        !strcmp(wins[i]->path, w->path) && wins[i]->copyno >= dst->copyno)
+                        dst->copyno = wins[i]->copyno + 1;
                 sprintf(dst->title, " %.50s (copy %d) ", base_name(w->path), dst->copyno);
                 dst->xoff = dst->yoff = 0;
                 if (!win_open(dst, K_IMAGE)) {
@@ -1891,10 +1938,10 @@ void win_share_palette(int on)
     if (on)
         win_share_update();
     else
-        for (i = 0; i < MAXWIN; i++)      /* back to their own palettes */
-            if (wins[i].used && wins[i].kind == K_IMAGE && wins[i].img.im.px &&
-                wins[i].handle > 0)
-                start_render(&wins[i]);
+        for (i = 0; i < nwins; i++)      /* back to their own palettes */
+            if (wins[i]->used && wins[i]->kind == K_IMAGE && wins[i]->img.im.px &&
+                wins[i]->handle > 0)
+                start_render(wins[i]);
     menu_update();
 }
 
@@ -1916,8 +1963,8 @@ void win_share_update(void)
     f = fopen(list, "wb");
     if (!f)
         return;
-    for (i = 0; i < MAXWIN; i++) {
-        VWIN *w = &wins[i];
+    for (i = 0; i < nwins; i++) {
+        VWIN *w = wins[i];
         SPREC rec;
         if (!w->used || w->kind != K_IMAGE || !w->img.im.px || w->closing)
             continue;
@@ -2040,8 +2087,8 @@ int win_click(VWIN *w, int mx, int my, int clicks)
         int i, row = (my - w->work.g_y - 4 - cell_h - 4) / cell_h, n = 0;
         if (row < 0)
             return 0;
-        for (i = 0; i < MAXWIN; i++) {
-            VWIN *v = &wins[i];
+        for (i = 0; i < nwins; i++) {
+            VWIN *v = wins[i];
             if (!v->used || v->kind == K_MAIN || v->handle <= 0)
                 continue;
             if (n++ == row) {
@@ -2078,8 +2125,8 @@ void win_apply_prefs(void)
 {
     int i;
     scrtd_ok = 0;
-    for (i = 0; i < MAXWIN; i++) {
-        VWIN *w = &wins[i];
+    for (i = 0; i < nwins; i++) {
+        VWIN *w = wins[i];
         if (!w->used || w->handle <= 0 || win_busy(w))
             continue;
         if (w->kind == K_PDF) {
@@ -2174,11 +2221,11 @@ static void layout_pending(VWIN *w)
 void win_prepare_pending(void)
 {
     int i;
-    for (i = 0; i < MAXWIN; i++)
-        if (wins[i].used && wins[i].need_layout && wins[i].kind == K_TEXT && wins[i].blob)
-            layout_pending(&wins[i]);
-    for (i = 0; i < MAXWIN; i++) {
-        VWIN *w = &wins[i];
+    for (i = 0; i < nwins; i++)
+        if (wins[i]->used && wins[i]->need_layout && wins[i]->kind == K_TEXT && wins[i]->blob)
+            layout_pending(wins[i]);
+    for (i = 0; i < nwins; i++) {
+        VWIN *w = wins[i];
         PROG pg;
         long sx, sy;
         int ok;
@@ -2210,14 +2257,14 @@ void win_prepare_pending(void)
 void win_shutdown(void)
 {
     int i;
-    for (i = 0; i < MAXWIN; i++)
-        if (wins[i].used) {
-            if (wins[i].job) {
-                wins[i].job->win = 0;
-                free(wins[i].job);
-                wins[i].job = 0;
+    for (i = 0; i < nwins; i++)
+        if (wins[i]->used) {
+            if (wins[i]->job) {
+                wins[i]->job->win = 0;
+                free(wins[i]->job);
+                wins[i]->job = 0;
             }
-            win_destroy(&wins[i]);
+            win_destroy(wins[i]);
         }
 }
 

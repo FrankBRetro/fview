@@ -78,16 +78,7 @@ static void build(void)
     obj_add(dt, D_APPLY, 0, G_BUTTON, SELECTABLE | EXIT | DEFAULT, 0, (long)"Apply", 35, r, 8, 1);
     obj_add(dt, D_CLOSE, 0, G_BUTTON, SELECTABLE | EXIT | LASTOB, 0, (long)"Close", 44, r, 7, 1);
     dt[D_ROOT].ob_height = r + 2;
-    {
-        int i;
-        for (i = 0; i < D_NOBJ; i++)
-            rsrc_obfix(dt, i);
-        for (i = 1; i < D_NOBJ; i++)
-            if (dt[i].ob_type == G_BUTTON) {     /* a little air */
-                dt[i].ob_y += 2;
-                dt[i].ob_height -= 2;
-            }
-    }
+    tree_finish(dt, D_NOBJ);
 }
 
 static void sel(int obj, int on)
@@ -374,8 +365,7 @@ static int run_dialog(NUMDLG *nd)
     cancel = n;
     obj_add(t, n++, 0, G_BUTTON, SELECTABLE | EXIT | LASTOB, 0, (long)"Cancel", 25, r, 9, 1);
     t[0].ob_height = r + 2;
-    for (i = 0; i < n; i++)
-        rsrc_obfix(t, i);
+    tree_finish(t, n);
     form_center(t, &x, &y, &w, &h);
     wind_update(BEG_UPDATE);
     form_dial(FMD_START, 0, 0, 0, 0, x, y, w, h);

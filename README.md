@@ -1,4 +1,4 @@
-# FView 1.7 — GEM file viewer and FConv picture converter for TOS, MultiTOS and MiNT
+# FView 1.7.1 — GEM file viewer and FConv picture converter for TOS, MultiTOS, MiNT and MagiC
 
 FView (`fview.prg`) starts with its menu bar and an **iconified main window**. Drop files
 on it (or on any fview window) from the desktop, open them with **File ›
@@ -117,6 +117,20 @@ dropped on their own).
   while the pointer is over a busy fview document window; fview never
   changes the pointer anywhere else. (If the AES has no window to spare,
   the progress panel is drawn inside the document window instead.)
+- **MagiC**: recognised by its `MagX` cookie. Dialogs use MagiC's own
+  check boxes and round radio buttons (also on XaAES, or any AES that
+  reports them through `appl_getinfo`), with MagiC's spacing; other AESes
+  keep the buttons that go black when selected. FView asks for `AP_TERM`
+  so MagiC can shut it down cleanly, and handles the backdrop button
+  (`WM_BOTTOMED`) in every window. Jobs run cooperatively, as on plain TOS.
+- **How many windows**: FView has no limit of its own; the AES decides.
+  Plain TOS has 7 windows for all programs together, MagiC 16 unless
+  `#_WND` in `MAGX.INF` sets more (up to 64), MultiTOS and XaAES as many
+  as memory allows. So that the AES's windows go to documents first, a
+  progress panel only gets a window of its own while at least one more
+  window is free; otherwise it is drawn inside its document. If a
+  document can't get a window, the panels of documents still loading move
+  into those documents to make room.
 - **MiNT**: with `U:\SHM` present, `fvwork.ttp` beside `fview.prg` and
   *MiNT workers* on, every load and re-render runs in its own `FVWORK`
   process (started with `Pexec` mode 100) at **nice 19**, so windows load

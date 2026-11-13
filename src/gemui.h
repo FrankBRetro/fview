@@ -8,7 +8,9 @@
 #include "fview.h"
 #include "doc.h"
 
-#define MAXWIN   16
+/* window records: allocated as needed and kept for reuse, so a VWIN
+   pointer stays valid; how many windows can be open is up to the AES */
+#define MAXWIN   256
 #define APPNAME  "FView"
 #define MARGIN   8
 
@@ -116,7 +118,8 @@ typedef struct VWIN {
     int    need_layout;          /* lay a long text out (with progress) */
 } VWIN;
 
-extern VWIN wins[MAXWIN];
+extern VWIN *wins[MAXWIN];
+extern int   nwins;           /* records allocated so far */
 extern int  vdih, ap_id;
 extern int  scr_w, scr_h, scr_planes, pix_w_um, pix_h_um;
 extern int  cell_w, cell_h;      /* system font cell                     */
@@ -126,6 +129,9 @@ extern DISPINFO dinfo;
 extern int  quitting;
 extern int  aes_iconify;         /* AES supports WF_ICONIFY             */
 extern int  aes_3d;
+extern int  aes_xbutton;      /* AES draws check boxes/round radio buttons */
+extern int  aes_magic;        /* MagiC (MagX cookie)                      */
+void tree_finish(OBJECT *t, int n);   /* chars -> pixels, buttons, rows */
 extern int  screen_interleaved;  /* ST-style interleaved planes          */              /* AES draws 3D objects (TOS 4 / AES 3.4+) */
 
 /* main.c */
