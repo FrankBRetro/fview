@@ -23,6 +23,7 @@ void prefs_default(PREFS *p)
     p->palmode       = PAL_OPTIMISE;
     p->keep_sys      = 1;
     p->ui_pens       = 1;
+    p->lang          = 0;                 /* English */
     p->bg            = BG_WHITE;
     p->gif_trans     = 1;
     p->png_alpha     = 1;
@@ -56,18 +57,26 @@ int prog_step(PROG *p, long done, long total)
     return p->cancelled;
 }
 
+/* English unless the program put its resource file's texts here
+   (fv_err_text[0] OK, then E_OPEN .. E_WRITE, the last unknown)      */
+const char *fv_err_text[8] = {
+    "OK", "Cannot open file", "File is damaged or not in the expected format",
+    "Not enough memory", "Cancelled", "This variant of the format is not supported",
+    "Error writing file", "Unknown error"
+};
+
 const char *fv_errstr(int e)
 {
     switch (e) {
-    case E_OK:     return "OK";
-    case E_OPEN:   return "Cannot open file";
-    case E_FORMAT: return "File is damaged or not in the expected format";
-    case E_NOMEM:  return "Not enough memory";
-    case E_CANCEL: return "Cancelled";
-    case E_UNSUP:  return "This variant of the format is not supported";
-    case E_WRITE:  return "Error writing file";
+    case E_OK:     return fv_err_text[0];
+    case E_OPEN:   return fv_err_text[1];
+    case E_FORMAT: return fv_err_text[2];
+    case E_NOMEM:  return fv_err_text[3];
+    case E_CANCEL: return fv_err_text[4];
+    case E_UNSUP:  return fv_err_text[5];
+    case E_WRITE:  return fv_err_text[6];
     }
-    return "Unknown error";
+    return fv_err_text[7];
 }
 
 /* ------------------------------------------------------------ detection */

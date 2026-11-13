@@ -7,6 +7,7 @@
 #include <gemx.h>
 #include "fview.h"
 #include "doc.h"
+#include "wdlg.h"
 
 /* window records: allocated as needed and kept for reuse, so a VWIN
    pointer stays valid; how many windows can be open is up to the AES */
@@ -129,10 +130,9 @@ extern DISPINFO dinfo;
 extern int  quitting;
 extern int  aes_iconify;         /* AES supports WF_ICONIFY             */
 extern int  aes_3d;
-extern int  aes_xbutton;      /* AES draws check boxes/round radio buttons */
 extern int  aes_magic;        /* MagiC (MagX cookie)                      */
-void tree_finish(OBJECT *t, int n);   /* chars -> pixels, buttons, rows */
-extern int  screen_interleaved;  /* ST-style interleaved planes          */              /* AES draws 3D objects (TOS 4 / AES 3.4+) */
+
+extern int  screen_interleaved;  /* ST-style interleaved planes          */
 
 /* main.c */
 void gui_dispatch_message(short *msg);
@@ -142,7 +142,6 @@ int  gui_coop_poll(void);        /* one non-blocking event pass         */
 void update_pointer(void);
 void open_files_from_string(char *s);
 void open_file(const char *path);
-void alertf(const char *fmt, ...);
 int  file_select(char *path, char *name, const char *title);
 int  prefs_radio_group(int obj, int *out, int max);
 void menu_update(void);
@@ -216,7 +215,6 @@ void  picdlg_refresh(VWIN *w);   /* w's settings or counts changed       */
 void  picdlg_forget(VWIN *w);    /* w is going                           */
 void  reduce_dialog(VWIN *w);
 void  resize_dialog(VWIN *w);
-int   modal_number(const char *title, const char *label, long *v, long lo, long hi);
 void  win_prepare_pending(void);
 const char *win_base_name(const char *p);
 
@@ -276,21 +274,6 @@ void    prefs_to_tree(OBJECT *t, const PREFS *p);
 void    tree_to_prefs(OBJECT *t, PREFS *p);
 int     prefs_button_kind(int obj);     /* PB_* */
 enum { PB_NONE = 0, PB_SAVE, PB_APPLY, PB_CLOSE, PB_TOGGLE };
-
-/* menu object indices (must match build_menu() in tree.c) */
-#define NMENUS 5
-enum {
-    MT_DESK = 3, MT_FILE, MT_VIEW, MT_PIC, MT_OPTS,
-    MI_ABOUT = 10,
-    MI_OPEN = 19, MI_CLOSE, MI_SEP1, MI_SAVEORIG, MI_SAVEDITH, MI_SEP2,
-    MI_PRINT, MI_SEP3, MI_QUIT,
-    MI_REAL = 29, MI_FIT, MI_ZOOMIN, MI_ZOOMOUT, MI_SEP4, MI_PREVPG,
-    MI_NEXTPG, MI_FIRSTPG, MI_LASTPG, MI_SEP5, MI_CYCLE,
-    MI_DUP = 41, MI_DITHER, MI_REDUCE, MI_RESIZE, MI_COUNT, MI_SEP6,
-    MI_LOADPAL, MI_SAVEPAL, MI_SEP7, MI_SHAREPAL,
-    MI_PREFS = 52,
-    MENU_NOBJ = 53
-};
 
 /* prefs.c */
 void prefs_load(PREFS *p);

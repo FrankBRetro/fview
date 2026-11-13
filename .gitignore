@@ -9,3 +9,4 @@ test/convtest
 .DS_Store
 test/arctest
 test/paltest
+__pycache__/

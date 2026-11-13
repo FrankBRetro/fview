@@ -116,4 +116,6 @@ void  dbg_init(const char *path, const char *who);
 void  dbg(const char *fmt, ...);
 #define LOG_ENV "FVLOG"
 
+void job_app_dir(char *dir);     /* the program's folder, ends in \\ */
+
 #endif

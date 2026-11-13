@@ -14,6 +14,7 @@
 #include <mintbind.h>
 #include <mint/cookie.h>
 #include "gemui.h"
+#include "fvrsc.h"
 
 #ifndef VA_START
 #define VA_START      0x4711
@@ -61,16 +62,6 @@ static char last_dir[256];
 long now_ms(void)
 {
     return (long)(clock() * 1000L / CLOCKS_PER_SEC);
-}
-
-void alertf(const char *fmt, ...)
-{
-    char buf[256];
-    va_list ap;
-    va_start(ap, fmt);
-    vsprintf(buf, fmt, ap);
-    va_end(ap);
-    form_alert(1, buf);
 }
 
 int file_select(char *path, char *name, const char *title)
@@ -501,17 +492,10 @@ void menu_update(void)
 
 static void about(void)
 {
-    char buf[256];
-    sprintf(buf, "[1][FView " FV_VERSION "  - file viewer|"
-            FV_CPU " version|"
-            "Pictures, text, Markdown,|RTF, PDF, GEM metafiles|"
-            "%s][ OK ]",
-            !have_mint ? "TOS: cooperative loading" :
-            !have_shm ? "MiNT: no U:\\SHM, cooperative" :
-            !have_worker ? "MiNT: FVWORK.TTP not found" :
-            prefs.use_workers ? "MiNT: background workers" :
-                                "MiNT: workers switched off");
-    form_alert(1, buf);
+    alert_rs(S_AL_ABOUT, FV_VERSION, FV_CPU,
+             rs(!have_mint ? S_AB_TOS : !have_shm ? S_AB_NOSHM :
+                !have_worker ? S_AB_NOWORKER :
+                prefs.use_workers ? S_AB_WORKERS : S_AB_WKOFF));
 }
 
 static void cycle_windows(void)
@@ -544,7 +528,7 @@ static void do_open(void)
     strcpy(path, last_dir);
     strcat(path, "*.*");
     name[0] = 0;
-    if (!file_select(path, name, "fview: open file"))
+    if (!file_select(path, name, rs(S_F_OPEN)))
         return;
     {
         char *s = strrchr(path, '\\');
@@ -612,7 +596,7 @@ void open_file(const char *path)
         return;
     w = win_new();
     if (!w) {
-        alertf("[1][fview: too many windows open.][ OK ]");
+        alert_rs(S_AL_TOOMANY);
         return;
     }
     win_load(w, path);
@@ -781,8 +765,12 @@ static void av_hello(void)
 
 void gui_dispatch_message(short *msg)
 {
-    VWIN *w = win_find(msg[3]);
+    VWIN *w;
     GRECT *r = (GRECT *)&msg[4];
+
+    if (wd_message(msg))                   /* alerts, Reduce, Resize */
+        return;
+    w = win_find(msg[3]);
 
     if (msg[0] >= WM_REDRAW && msg[0] <= 40 && prefs_handle(msg[3])) {
         switch (msg[0]) {
@@ -900,6 +888,8 @@ void gui_handle_key(int ks, int key)
     int scan = (key >> 8) & 0xFF, asc = key & 0xFF;
     int ctrl = ks & K_CTRL, shift = ks & (K_LSHIFT | K_RSHIFT);
 
+    if (wd_key(ks, key))                   /* a dialog window on top */
+        return;
     if (ctrl) {
         switch (asc | 0x40) {
         case 'O': do_open(); return;
@@ -967,6 +957,8 @@ void gui_handle_button(int mx, int my, int mb, int ks, int clicks)
     int h = wind_find(mx, my);
     VWIN *w;
     (void)mb; (void)ks;
+    if (wd_button(h, mx, my, clicks))
+        return;
     if (prefs_handle(h)) {
         prefs_click(mx, my);
         return;
@@ -1140,6 +1132,16 @@ int main(int argc, char **argv)
     aes_iconify = detect_iconify();
     aes_3d = detect_3d();
     aes_xbutton = detect_xbutton();
+    if (!rsc_open("FVIEW", prefs.lang)) {
+        form_alert(1, "[3][FVIEW.RSC is missing.|Copy it next to FVIEW.PRG.][ Quit ]");
+        v_clsvwk(vdih);
+        appl_exit();
+        return 1;
+    }
+    wd_alert_tree = T_ALERT;
+    wd_app_title = " FView ";
+    for (i = 0; i < 8; i++)                   /* error texts, translated */
+        fv_err_text[i] = rs(S_E_OK + i);
     disp_setup_reserved();                    /* again: 3D greys are kept */
     fv_temp_dir();                            /* note the start folder now */
     dbg("MagiC %d, check buttons %d", aes_magic, aes_xbutton);
@@ -1187,11 +1189,14 @@ int main(int argc, char **argv)
 
     if (bee_on)
         graf_mouse(ARROW, 0);
+    wd_close_all();
+    picdlg_close();
     prefs_close();
     win_shutdown();
     fonts_unload(&scrfonts);
     pal_restore();
     menu_bar(menu, 0);
+    rsrc_free();
     v_clsvwk(vdih);
     appl_exit();
     return 0;

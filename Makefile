@@ -5,12 +5,15 @@
 #   make release         release builds only
 #   make log             log builds only
 #   make VARIANTS=000    just the 68000 builds (any list of the variants)
+#   make rsc             rebuild the resource files from rsc/lang/*.txt
+#                        (python3; the .RSC files are in the repository)
 #
 # Needs the MiNT cross toolchain (m68k-atari-mint-gcc) with mintlib and
 # gemlib. Do not use -mshort: stb_image needs 32-bit int.
 #
 # CPU variants, each with all three programs (FVIEW.PRG, FCONV.PRG and
-# FVWORK.TTP - copy all three of one build into the same folder):
+# FVWORK.TTP) and the resource files (FVIEW.RSC, FCONV.RSC and their
+# translations) - copy all of one build into the same folder:
 #   000      68000, runs on every Atari          -> release/, log/
 #   030      68030 code, no FPU (TT, Falcon)     -> release/030/, log/030/
 #   030fpu   68030 + 68881/68882 FPU code        -> release/030fpu/, log/030fpu/
@@ -44,10 +47,14 @@ DIR_cf     = /cf
 CORE = jobcore.c jobexec.c util.c rd.c dither.c palette.c img_save.c convert.c pdf_save.c \
        arcio.c deflate.c dec_st.c dec_gem.c dec_gif.c dec_iff.c dec_bmp.c dec_img.c \
        dec_stb.c dec_text.c dec_pdf.c
-GUI  = main.c win.c render.c fonts.c job.c print.c prefs.c tree.c picdlg.c
-CONV = fconv.c job.c
+GUI  = main.c win.c render.c fonts.c job.c print.c prefs.c tree.c picdlg.c wdlg.c
+CONV = fconv.c job.c wdlg.c
 HDRS = src/fview.h src/gemui.h src/job.h src/doc.h src/rd.h src/arcio.h src/deflate.h \
-       src/palette.h
+       src/palette.h src/wdlg.h src/fvrsc.h src/fcrsc.h
+
+# resource files: English, German, French, Italian, Spanish, Czech
+RSCS = fview.rsc fviewde.rsc fviewfr.rsc fviewit.rsc fviewes.rsc fviewcz.rsc \
+       fconv.rsc fconvde.rsc fconvfr.rsc fconvit.rsc fconves.rsc fconvcz.rsc
 
 # one build: $(1) variant, $(2) rel|log, $(3) FV_LOG value, $(4) release|log
 define BUILD
@@ -70,7 +77,12 @@ build/$(2)$(1)/%.o: src/%.c $$(HDRS)
 	@mkdir -p $$(@D)
 	$$(CC) $$(CFLAGS) $(FLAGS_$(1)) -DFV_LOG=$(3) -c $$< -o $$@
 
-$(4): $(4)$(DIR_$(1))/fview.prg $(4)$(DIR_$(1))/fconv.prg $(4)$(DIR_$(1))/fvwork.ttp
+$(4)$(DIR_$(1))/%.rsc: rsc/%.rsc
+	@mkdir -p $$(@D)
+	cp $$< $$@
+
+$(4): $(4)$(DIR_$(1))/fview.prg $(4)$(DIR_$(1))/fconv.prg $(4)$(DIR_$(1))/fvwork.ttp \
+      $(addprefix $(4)$(DIR_$(1))/,$(RSCS))
 endef
 
 all: release log
@@ -95,7 +107,10 @@ rendertest: test/rendertest.c test/vdistub.c src/render.c $(HOSTSRC)
 paltest: test/paltest.c src/palette.c src/dither.c src/util.c
 	gcc -O1 -g -Isrc -o test/paltest test/paltest.c src/palette.c src/dither.c src/util.c
 
+rsc:
+	python3 rsc/mkrsc.py
+
 clean:
 	rm -rf build release log test/hosttest test/rendertest test/convtest test/paltest
 
-.PHONY: all release log clean hosttest rendertest convtest paltest
+.PHONY: all release log clean hosttest rendertest convtest paltest rsc

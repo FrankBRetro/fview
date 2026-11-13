@@ -9,7 +9,7 @@
 
 #include <stddef.h>
 
-#define FV_VERSION "1.7.1"
+#define FV_VERSION "1.8.0"
 
 /* the CPU this build is for, from the compiler's own macros */
 #if defined(__mcoldfire__)
@@ -90,6 +90,8 @@ typedef struct {
     char ui_pens;           /* never give pens 0/1 (and 3D greys) to a
                                picture; off: a picture may use them, its
                                lightest/darkest colours go there          */
+    char lang;              /* 0 English, 1 German, 2 French, 3 Italian,
+                               4 Spanish, 5 Czech: which FVIEW*.RSC  */
     char bg;                /* transparency / alpha background           */
     /* gif */
     char gif_trans;         /* honour transparency                        */
@@ -190,6 +192,7 @@ enum { RB_ORIG = 0, RB_DISP, RB_DOC, RB_MAX };
 #define E_WRITE    -6
 
 const char *fv_errstr(int e);
+extern const char *fv_err_text[8];   /* translations go here */
 extern char fv_errdetail[80];
 
 /* ------------------------------------------------------------ detection */

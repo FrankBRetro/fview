@@ -1,4 +1,4 @@
-# FView 1.7.1 — GEM file viewer and FConv picture converter for TOS, MultiTOS, MiNT and MagiC
+# FView 1.8 — GEM file viewer and FConv picture converter for TOS, MultiTOS, MiNT and MagiC
 
 FView (`fview.prg`) starts with its menu bar and an **iconified main window**. Drop files
 on it (or on any fview window) from the desktop, open them with **File ›
@@ -46,13 +46,49 @@ make VARIANTS=000       # only the 68000 builds (or 030, 030fpu, 040, cf)
 | 68040 | `release/040/`, `log/040/` | 68040 machines and accelerators with the full 68040 (built-in FPU; not a 68LC040) |
 | ColdFire | `release/cf/`, `log/cf/` | FireBee (ColdFire V4e with FPU) |
 
-Each folder holds `fview.prg`, `fconv.prg` and `fvwork.ttp` — **copy all
-three of one build into the same folder** (`fvwork.ttp` is the MiNT
-background worker both programs use; without it they still work,
-cooperatively). The log builds write `FVIEW.LOG` / `FCONV.LOG` next to the
-program, see *Step log*. Do not build with `-mshort`. No resource file is
-needed — menus, dialogs and icons are built at run time. PNG/JPEG decoding
-uses `stb_image.h` (public domain, included in `src/`).
+Each folder holds `fview.prg`, `fconv.prg`, `fvwork.ttp` and the resource
+files — **copy everything of one build into the same folder**
+(`fvwork.ttp` is the MiNT background worker both programs use; without it
+they still work, cooperatively). The log builds write `FVIEW.LOG` /
+`FCONV.LOG` next to the program, see *Step log*. Do not build with
+`-mshort`. PNG/JPEG decoding uses `stb_image.h` (public domain, included in
+`src/`).
+
+### Resource files and languages
+
+Menus, dialogs, alerts and the other texts are in GEM resource files next
+to the programs, one per language:
+
+| Language | FView | FConv |
+|---|---|---|
+| English (needed: the fallback) | `fview.rsc` | `fconv.rsc` |
+| German | `fviewde.rsc` | `fconvde.rsc` |
+| French | `fviewfr.rsc` | `fconvfr.rsc` |
+| Italian | `fviewit.rsc` | `fconvit.rsc` |
+| Spanish | `fviewes.rsc` | `fconves.rsc` |
+| Czech | `fviewcz.rsc` | `fconvcz.rsc` |
+
+English is the default. Preferences › *Language* (EN DE FR IT ES CZ)
+chooses another; it is used from the next start. FConv follows the
+language chosen in FView (`FVIEW.INF`), unless `FCONV.INF` has a `lang=`
+line of its own (0 English … 5 Czech). The Czech texts are written without
+accents, because the Atari system font has no Czech letters.
+
+The files are made by `rsc/mkrsc.py` (`make rsc`, needs `python3`) from
+the texts in `rsc/lang/*.txt`, which is the place to correct or add a
+translation; it also writes `src/fvrsc.h`, `src/fcrsc.h` and
+`src/fvprefs.inc`. They are plain resource files that every TOS loads, and
+the script refuses anything that could upset TOS 1.x–4.x or EmuTOS: files
+over 32000 bytes (each is 5–12 KB), alerts over the TOS limits (5 lines of
+32 characters, 3 buttons of 10, counting `%.30s` as 30 characters),
+drop-down menus wider than 32 characters, longer than 20 items or bigger
+than the AES's menu buffer (a quarter of a 640×200 screen), a menu bar
+over 79 characters, dialogs that wouldn't fit a 640×200 or 640×400
+desktop in a window (also with MagiC's wider check boxes), translations
+whose `printf` codes differ from the English ones, and characters the
+Atari character set doesn't have. `test/rscshow.py file.rsc out/` reads a
+resource file the way `rsrc_load` does, reports overlapping objects and
+draws the trees as PNG pictures (`--magic` for MagiC's check boxes).
 
 ## FConv — picture converter
 
@@ -123,6 +159,16 @@ dropped on their own).
   keep the buttons that go black when selected. FView asks for `AP_TERM`
   so MagiC can shut it down cleanly, and handles the backdrop button
   (`WM_BOTTOMED`) in every window. Jobs run cooperatively, as on plain TOS.
+- **Nothing waits for an answer**: alerts and the Reduce colours / Resize
+  dialogs are windows of their own, like the Preferences and Dithering
+  windows, so pictures keep loading, printing carries on and windows can
+  be moved while a question is open. Return chooses the default button,
+  Undo or Esc the cancelling one, the window's closer cancels too; Tab and
+  the cursor keys move between number fields. Several can be open at once
+  (one Resize dialog per picture, say), and a picture's dialogs and
+  questions close with it. Only when the AES has no window left does an
+  alert fall back to the AES's own (modal) one. The file selector is the
+  AES's (or its replacement's) and stays modal.
 - **How many windows**: FView has no limit of its own; the AES decides.
   Plain TOS has 7 windows for all programs together, MagiC 16 unless
   `#_WND` in `MAGX.INF` sets more (up to 64), MultiTOS and XaAES as many
@@ -290,7 +336,9 @@ folder. `make release` or `make log` builds just one of them.
 | `jobexec.c` | what an FView / FConv job does (load, render, save, duplicate, reduce, resize, count, shared palette) |
 | `fconv.c` | FConv |
 | `pdf_save.c`, `deflate.c`, `arcio.c` | FConv's PDF writer and its deflate compressor (shared with FArchive) |
-| `print.c`, `prefs.c`, `tree.c` | GDOS printing, preferences, run-time object trees |
+| `print.c`, `prefs.c`, `tree.c` | GDOS printing, preferences, the trees from the resource file |
+| `wdlg.c` | the resource file (both programs), dialogs and alerts in windows |
+| `rsc/mkrsc.py`, `rsc/lang/*.txt` | the resource files and their texts in six languages |
 | `dec_*.c`, `dither.c`, `img_save.c` | decoders, quantiser/ditherer, IMG writer (no GEM code) |
 
 ## What has been tested, and what to check on the machine
@@ -304,7 +352,9 @@ No Atari toolchain or emulator was available where this was written, so:
   a PDF using compressed object streams. `paltest` checks colour counts,
   reduction, palette file round trips (JASC, ACT, GPL), shared palettes and
   the light/dark arrangement of the menu pens.
-  Run under AddressSanitizer.
+  Run under AddressSanitizer. `rsc/mkrsc.py` checks every language's
+  resource files against the TOS limits, and `test/rscshow.py` loads them
+  independently and checks that no dialog objects overlap.
 - **Type-checked for the 68000** against the real mintlib and gemlib
   headers (clang M68k backend, `-Wall`, no warnings).
 - **Not yet run on TOS/MiNT.** Worth watching on first runs:

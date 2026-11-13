@@ -23,6 +23,7 @@
 #include <mintbind.h>
 #include <mint/cookie.h>
 #include "gemui.h"
+#include "fcrsc.h"
 
 #undef APPNAME
 #define APPNAME "FConv"
@@ -64,7 +65,7 @@ GRECT desk;
 PREFS prefs;
 DISPINFO dinfo;
 int  quitting;
-int  aes_iconify, aes_3d;
+int  aes_iconify, aes_3d, aes_xbutton, aes_magic;
 extern const char *job_app_name, *job_log_name;
 
 /* ------------------------------------------------------------ settings */
@@ -84,16 +85,6 @@ static char app_folder[256];
 long now_ms(void)
 {
     return (long)(clock() * 1000L / CLOCKS_PER_SEC);
-}
-
-void alertf(const char *fmt, ...)
-{
-    char buf[256];
-    va_list ap;
-    va_start(ap, fmt);
-    vsprintf(buf, fmt, ap);
-    va_end(ap);
-    form_alert(1, buf);
 }
 
 static int fc_file_select(char *path, char *name, const char *title)
@@ -124,6 +115,8 @@ static void find_app_folder(void)
     strcat(app_folder, "\\");
 }
 
+static int fc_lang = -1;                     /* lang= in FCONV.INF, -1 none */
+
 static void settings_path(char *p)
 {
     strcpy(p, app_folder);
@@ -142,6 +135,8 @@ static void settings_save(void)
             "dither=%d\nserpentine=%d\nsmooth=%d\npalette=%d\ndest=%s\n",
             cs.pdf ? "pdf" : "img", cs.xfmt, cs.fit, cs.replace, cs.subdirs, prefs.dither,
             prefs.serpentine, prefs.smooth, prefs.palmode, cs.dest);
+    if (fc_lang >= 0)
+        fprintf(f, "lang=%d\n", fc_lang);
     fclose(f);
 }
 
@@ -170,12 +165,51 @@ static void settings_load(void)
         else if (!strcmp(line, "serpentine")) prefs.serpentine = n != 0;
         else if (!strcmp(line, "smooth")) prefs.smooth = n != 0;
         else if (!strcmp(line, "palette")) prefs.palmode = n ? PAL_SYSTEM : PAL_OPTIMISE;
+        else if (!strcmp(line, "lang") && n >= 0 && n < LANG_N) fc_lang = n;
         else if (!strcmp(line, "dest")) {
             strncpy(cs.dest, v, sizeof cs.dest - 2);
             cs.dest[sizeof cs.dest - 2] = 0;
         }
     }
     fclose(f);
+}
+
+/* FConv's language: lang= in FCONV.INF if it has one, otherwise the one
+   chosen in FView's Preferences (FVIEW.INF in HOME or next to FConv),
+   otherwise English                                                   */
+static int inf_lang(const char *path)
+{
+    char line[128];
+    int n = -1;
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, "lang=", 5))
+            n = atoi(line + 5);
+    fclose(f);
+    return n >= 0 && n < LANG_N ? n : -1;
+}
+
+static int language(void)
+{
+    char p[300];
+    const char *home = getenv("HOME");
+    int n;
+    if (fc_lang >= 0)
+        return fc_lang;
+    if (home && *home && strlen(home) < 280) {
+        strcpy(p, home);
+        if (p[strlen(p) - 1] != '\\' && p[strlen(p) - 1] != '/')
+            strcat(p, "\\");
+        strcat(p, "FVIEW.INF");
+        if ((n = inf_lang(p)) >= 0)
+            return n;
+    }
+    strcpy(p, app_folder);
+    strcat(p, "FVIEW.INF");
+    n = inf_lang(p);
+    return n >= 0 ? n : LANG_EN;
 }
 
 /* ------------------------------------------------------------- display */
@@ -209,128 +243,51 @@ static void disp_init(void)
 
 /* ---------------------------------------------------------- object trees */
 
-static void obj_add(OBJECT *t, int idx, int parent, int type, int flags,
-                    int state, long spec, int x, int y, int w, int h)
-{
-    OBJECT *o = &t[idx];
-    o->ob_next = o->ob_head = o->ob_tail = -1;
-    o->ob_type = type;
-    o->ob_flags = flags;
-    o->ob_state = state;
-    o->ob_spec.index = spec;
-    o->ob_x = x; o->ob_y = y; o->ob_width = w; o->ob_height = h;
-    if (parent >= 0) {
-        OBJECT *p = &t[parent];
-        if (p->ob_head < 0)
-            p->ob_head = idx;
-        else
-            t[p->ob_tail].ob_next = idx;
-        p->ob_tail = idx;
-        o->ob_next = parent;
-    }
-}
 
 /* ----------------------------------------------------------------- menu */
 
-#define NTITLE 4
-static char scr_item[40];
-static const char *titles[NTITLE] = { " FConv ", " File ", " Format ", " Dither " };
-static const char *m_desk[] = {
-    "  About FConv...     ", "---------------------",
-    "  Desk Accessory 1   ", "  Desk Accessory 2   ", "  Desk Accessory 3   ",
-    "  Desk Accessory 4   ", "  Desk Accessory 5   ", "  Desk Accessory 6   "
-};
-static const char *m_file[] = {
-    "  Convert files...      ^O ", "  Destination folder... ^D ",
-    "---------------------------", "  Quit                  ^Q "
-};
-static const char *m_fmt[] = {
-    "  GEM IMG files             ", "  PDF files                 ",
-    "----------------------------",
-    "  Original depth            ", "  True colour (24 bit)      ", scr_item,
-    "  Mono (1 bit)              ", "----------------------------",
-    "  Fit to screen size        ", "  Replace existing files    ",
-    "  Include subfolders        "
-};
-static const char *m_dith[] = {
-    "  Floyd-Steinberg     ", "  Atkinson            ", "  Ordered             ",
-    "  None                ", "----------------------",
-    "  Serpentine          ", "  Smooth shrink       ", "----------------------",
-    "  Palette per picture ", "  System palette      "
-};
-enum {                                       /* item numbers inside menus */
-    D_ABOUT = 0,
-    F_CONVERT = 0, F_DEST = 1, F_QUIT = 3,
-    X_IMG = 0, X_PDF = 1,
-    X_ORIG = 3, X_TRUE, X_SCREEN, X_MONO, X_FIT = 8, X_REPLACE, X_SUBDIRS,
-    T_FS = 0, T_ATK, T_ORD, T_NONE, T_SERP = 5, T_SMOOTH, T_OPT = 8, T_SYS
-};
-static const char **m_lists[NTITLE] = { m_desk, m_file, m_fmt, m_dith };
-static const int m_counts[NTITLE] = { 8, 4, 11, 10 };
-#define MENU_OBJS (8 + 8 + 4 + 11 + 10 + NTITLE + 8)
-static OBJECT menu[MENU_OBJS];
-static int m_first[NTITLE];                  /* object of each menu's item 0 */
+/* from the resource file (mkrsc.py lays it out the Atari way); the
+   screen-colours item says how many colours the screen has            */
+static OBJECT *menu;
+static char scr_item[48];
 
 static OBJECT *fc_build_menu(void)
 {
-    int i, idx, x, ncol = scr_w / (cell_w ? cell_w : 8), tx[NTITLE];
-    obj_add(menu, 0, -1, G_IBOX, 0, 0, 0L, 0, 0, ncol, 25);
-    obj_add(menu, 1, 0, G_BOX, 0, 0, 0x00001100L, 0, 0, ncol, 0x0201);
-    x = 0;
-    for (i = 0; i < NTITLE; i++) {
-        tx[i] = x;
-        x += (int)strlen(titles[i]);
-    }
-    obj_add(menu, 2, 1, G_IBOX, 0, 0, 0L, 2, 0, x, 0x0301);
-    for (i = 0; i < NTITLE; i++)
-        obj_add(menu, 3 + i, 2, G_TITLE, 0, 0, (long)titles[i], tx[i], 0,
-                (int)strlen(titles[i]), 0x0301);
-    obj_add(menu, 3 + NTITLE, 0, G_IBOX, 0, 0, 0L, 0, 0x0301, ncol, 19);
-    idx = 4 + NTITLE;
-    for (i = 0; i < NTITLE; i++) {
-        int k, w = 0, box = idx, bx = 2 + tx[i];
-        for (k = 0; k < m_counts[i]; k++)
-            if ((int)strlen(m_lists[i][k]) > w)
-                w = (int)strlen(m_lists[i][k]);
-        if (bx + w > ncol)
-            bx = ncol - w;
-        obj_add(menu, idx++, 3 + NTITLE, G_BOX, 0, 0, 0x00FF1100L, bx, 0, w, m_counts[i]);
-        m_first[i] = idx;
-        for (k = 0; k < m_counts[i]; k++) {
-            int sep = m_lists[i][k][0] == '-';
-            obj_add(menu, idx++, box, G_STRING, 0, sep ? DISABLED : 0,
-                    (long)m_lists[i][k], 0, k, w, 1);
-        }
-    }
-    menu[idx - 1].ob_flags |= LASTOB;
-    for (i = 0; i < idx; i++)
-        rsrc_obfix(menu, i);
+    int box;
+    menu = rs_tree(T_MENU);
     menu[0].ob_width = scr_w;
     menu[1].ob_width = scr_w;
+    menu[MB_0 - 1].ob_width = scr_w;
+    for (box = menu[MB_0 - 1].ob_head; box > 0 && box != MB_0 - 1; box = menu[box].ob_next)
+        if (menu[box].ob_x + menu[box].ob_width > scr_w)
+            menu[box].ob_x = scr_w - menu[box].ob_width;
+    if (dinfo.truecolor)
+        snprintf(scr_item, sizeof scr_item, "%s", rs(S_FI_SCREEN24));
+    else
+        rsf(scr_item, sizeof scr_item, S_FI_SCREEN, scr_planes >= 8 ? 256 : 1 << scr_planes);
+    menu[MI_SCREEN].ob_spec.free_string = scr_item;
     return menu;
 }
-
-#define MI(m, k) (m_first[m] + (k))
 
 static void fc_menu_update(void)
 {
     int i;
-    menu_icheck(menu, MI(2, X_IMG), !cs.pdf);
-    menu_icheck(menu, MI(2, X_PDF), cs.pdf);
-    for (i = 0; i <= XF_MONO; i++)
-        menu_icheck(menu, MI(2, X_ORIG + i), cs.xfmt == i);
-    menu_icheck(menu, MI(2, X_FIT), cs.fit);
-    menu_icheck(menu, MI(2, X_REPLACE), cs.replace);
-    menu_icheck(menu, MI(2, X_SUBDIRS), cs.subdirs);
-    for (i = 0; i <= DITH_NONE; i++)
-        menu_icheck(menu, MI(3, T_FS + i), prefs.dither == i);
-    menu_icheck(menu, MI(3, T_SERP), prefs.serpentine);
-    menu_icheck(menu, MI(3, T_SMOOTH), prefs.smooth);
-    menu_icheck(menu, MI(3, T_OPT), prefs.palmode == PAL_OPTIMISE);
-    menu_icheck(menu, MI(3, T_SYS), prefs.palmode == PAL_SYSTEM);
+    menu_icheck(menu, MI_IMG, !cs.pdf);
+    menu_icheck(menu, MI_PDF, cs.pdf);
+    for (i = 0; i <= XF_MONO; i++)               /* original .. mono */
+        menu_icheck(menu, MI_ORIG + i, cs.xfmt == i);
+    menu_icheck(menu, MI_FIT, cs.fit);
+    menu_icheck(menu, MI_REPLACE, cs.replace);
+    menu_icheck(menu, MI_SUBDIRS, cs.subdirs);
+    for (i = 0; i <= DITH_NONE; i++)             /* Floyd-Steinberg .. none */
+        menu_icheck(menu, MI_FS + i, prefs.dither == i);
+    menu_icheck(menu, MI_SERP, prefs.serpentine);
+    menu_icheck(menu, MI_SMOOTH, prefs.smooth);
+    menu_icheck(menu, MI_PERPIC, prefs.palmode == PAL_OPTIMISE);
+    menu_icheck(menu, MI_SYSPAL, prefs.palmode == PAL_SYSTEM);
     /* the palette choice only matters for the screen's colours */
-    menu_ienable(menu, MI(3, T_OPT), !dinfo.truecolor && !dinfo.fixed_palette);
-    menu_ienable(menu, MI(3, T_SYS), !dinfo.truecolor);
+    menu_ienable(menu, MI_PERPIC, !dinfo.truecolor && !dinfo.fixed_palette);
+    menu_ienable(menu, MI_SYSPAL, !dinfo.truecolor);
 }
 
 /* ------------------------------------------------------------ the queue */
@@ -397,7 +354,7 @@ static void add_file(const char *p, int told)
     else {
         n_skip++;
         if (told)                            /* dropped on its own */
-            log_add("%s: not a picture, skipped", base_name(p));
+            log_add(rs(S_FC_SKIPPED), base_name(p));
     }
 }
 
@@ -467,7 +424,10 @@ static void add_path(const char *p)
     if (is_dir(p)) {
         int before = qn;
         scan_dir(p, 0);
-        log_add("%s: %d picture%s found", p, qn - before, qn - before == 1 ? "" : "s");
+        if (qn - before == 1)
+            log_add(rs(S_FC_FOUND1), p);
+        else
+            log_add(rs(S_FC_FOUND), p, qn - before);
     } else
         add_file(p, 1);
     graf_mouse(ARROW, 0);
@@ -545,7 +505,7 @@ static void log_add(const char *fmt, ...)
     va_list ap;
     int was_bottom = logtop >= lognum - log_visible();
     va_start(ap, fmt);
-    vsprintf(b, fmt, ap);
+    vsnprintf(b, sizeof b, fmt, ap);
     va_end(ap);
     strncpy(logl[lognum % LOGN], b, LOGW - 1);
     logl[lognum % LOGN][LOGW - 1] = 0;
@@ -575,41 +535,53 @@ static char *secs(long ms, char *b)
 #define FL3DACT 0x0600
 #define PD_PAD  16
 
-enum { P_ROOT = 0, P_TOTAL, P_TBOX, P_TBAR, P_FILE, P_FBOX, P_FBAR, P_STAT, P_BTN, P_NOBJ };
-static OBJECT ptree[P_NOBJ];
-static char t_total[80], t_file[80], t_stat[80], t_btn[12];
+static OBJECT ptree[FPROGRESS_NOBJ];
+static char t_total[80], t_file[80], t_stat[80], t_btn[24];
 static char pd_title[40];
 static int  pdlg;                            /* window handle, 0 = closed  */
 static long f_done, f_total = 1;             /* this file's progress       */
 
+#define SET(i, x_, y_, w_, h_) (ptree[i].ob_x = (x_), ptree[i].ob_y = (y_), \
+                                ptree[i].ob_width = (w_), ptree[i].ob_height = (h_))
+
+/* the FPROGRESS tree of the resource file, laid out in pixels here */
 static void build_dialog(void)
 {
     long fill = (scr_planes >= 4) ? 0x00001174L : 0x00001171L;
-    int bak = aes_3d ? FL3DBAK : 0, pad = PD_PAD, pw = 40 * cell_w;
+    int pad = PD_PAD, pw = 40 * cell_w;
     int bh = cell_h > 10 ? 12 : 8, btnh = cell_h + 6, btnw = 11 * cell_w, y;
-    obj_add(ptree, P_ROOT, -1, G_BOX, bak, 0, aes_3d ? 0x00001100L : 0x00011100L,
-            0, 0, pw + 2 * pad, 10);
+    memcpy(ptree, rs_tree(T_FPROGRESS), sizeof ptree);
+    ptree[P_ROOT].ob_flags = aes_3d ? FL3DBAK : 0;
+    ptree[P_ROOT].ob_spec.index = aes_3d ? 0x00001100L : 0x00011100L;
+    SET(P_ROOT, 0, 0, pw + 2 * pad, 10);
     /* all files */
     y = pad;
-    obj_add(ptree, P_TOTAL, 0, G_STRING, 0, 0, (long)t_total, pad, y, pw, cell_h);
+    ptree[P_TOTAL].ob_spec.free_string = t_total;
+    SET(P_TOTAL, pad, y, pw, cell_h);
     y += cell_h + 6;
-    obj_add(ptree, P_TBOX, 0, G_BOX, aes_3d ? FL3DIND : 0, aes_3d ? SELECTED : 0,
-            0x00FF1100L, pad, y, pw, bh);
-    obj_add(ptree, P_TBAR, P_TBOX, G_BOX, 0, 0, fill, 0, 0, 0, bh);
+    ptree[P_TBOX].ob_flags = aes_3d ? FL3DIND : 0;
+    ptree[P_TBOX].ob_state = aes_3d ? SELECTED : 0;
+    SET(P_TBOX, pad, y, pw, bh);
+    ptree[P_TBAR].ob_spec.index = fill;
+    SET(P_TBAR, 0, 0, 0, bh);
     /* this file */
     y += bh + cell_h;
-    obj_add(ptree, P_FILE, 0, G_STRING, 0, 0, (long)t_file, pad, y, pw, cell_h);
+    ptree[P_FILE].ob_spec.free_string = t_file;
+    SET(P_FILE, pad, y, pw, cell_h);
     y += cell_h + 6;
-    obj_add(ptree, P_FBOX, 0, G_BOX, aes_3d ? FL3DIND : 0, aes_3d ? SELECTED : 0,
-            0x00FF1100L, pad, y, pw, bh);
-    obj_add(ptree, P_FBAR, P_FBOX, G_BOX, 0, 0, fill, 0, 0, 0, bh);
+    ptree[P_FBOX].ob_flags = aes_3d ? FL3DIND : 0;
+    ptree[P_FBOX].ob_state = aes_3d ? SELECTED : 0;
+    SET(P_FBOX, pad, y, pw, bh);
+    ptree[P_FBAR].ob_spec.index = fill;
+    SET(P_FBAR, 0, 0, 0, bh);
     /* status and button on a row of their own, clear of the bars (3D
        buttons draw a few pixels outside their box)                     */
     y += bh + cell_h + 4;
-    obj_add(ptree, P_STAT, 0, G_STRING, 0, 0, (long)t_stat, pad, y + (btnh - cell_h) / 2,
-            pw - btnw - 2 * cell_w, cell_h);
-    obj_add(ptree, P_BTN, 0, G_BUTTON, SELECTABLE | EXIT | DEFAULT | LASTOB |
-            (aes_3d ? FL3DACT : 0), 0, (long)t_btn, pad + pw - btnw, y, btnw, btnh);
+    ptree[P_STAT].ob_spec.free_string = t_stat;
+    SET(P_STAT, pad, y + (btnh - cell_h) / 2, pw - btnw - 2 * cell_w, cell_h);
+    ptree[P_BTN].ob_flags = SELECTABLE | EXIT | DEFAULT | LASTOB | (aes_3d ? FL3DACT : 0);
+    ptree[P_BTN].ob_spec.free_string = t_btn;
+    SET(P_BTN, pad + pw - btnw, y, btnw, btnh);
     ptree[P_ROOT].ob_height = y + btnh + pad;
 }
 
@@ -705,24 +677,24 @@ static void dlg_close(void)
 static void set_total_text(void)
 {
     if (finished)
-        sprintf(t_total, "%s: %d converted", cancelling ? "Cancelled" : "Done", n_ok);
+        rsf(t_total, sizeof t_total, S_FC_DONE_TOT, rs(cancelling ? S_FC_CANCELLED : S_FC_DONE), n_ok);
     else
-        sprintf(t_total, "File %d of %d", qpos + 1 > qn ? qn : qpos + 1, qn);
+        rsf(t_total, sizeof t_total, S_FC_FILEOF, qpos + 1 > qn ? qn : qpos + 1, qn);
 }
 
 static void set_stat_text(int pct)
 {
     if (finished) {
         if (n_fail)
-            sprintf(t_stat, "%d failed: %.24s", n_fail, first_err);
+            rsf(t_stat, sizeof t_stat, S_FC_ST_FAIL, n_fail, first_err);
         else if (n_skip)
-            sprintf(t_stat, "%d not pictures, skipped", n_skip);
+            rsf(t_stat, sizeof t_stat, S_FC_ST_SKIP, n_skip);
         else
             strcpy(t_stat, "");
     } else if (cancelling)
-        strcpy(t_stat, "Cancelling...");
+        snprintf(t_stat, sizeof t_stat, "%s", rs(S_FC_ST_CANCEL));
     else if (n_fail)
-        sprintf(t_stat, "%3d%%   %d failed", pct, n_fail);
+        rsf(t_stat, sizeof t_stat, S_FC_ST_PCTF, pct, n_fail);
     else
         sprintf(t_stat, "%3d%%", pct);
 }
@@ -793,10 +765,10 @@ static void finish_all(void)
     running = 0;
     finished = 1;
     skip_shown = n_skip;
-    log_add("%s: %d converted, %d failed, %d skipped in %s", cancelling ? "Cancelled" : "Done",
+    log_add(rs(S_FC_SUMMARY), rs(cancelling ? S_FC_CANCELLED : S_FC_DONE),
             n_ok, n_fail, n_skip, secs(now_ms() - batch_t0, t));
     cur = 0;
-    strcpy(t_btn, "OK");
+    snprintf(t_btn, sizeof t_btn, "%s", rs(S_B_OK));
     ptree[P_BTN].ob_state &= ~SELECTED;
     strcpy(t_file, "");
     set_total_text();
@@ -823,8 +795,8 @@ static void start_next(void)
         if (!out_name(src, out)) {
             n_fail++;
             if (!first_err[0])
-                sprintf(first_err, "%.20s: no free name", base_name(src));
-            log_add("%s: failed, no free output name", base_name(src));
+                rsf(first_err, sizeof first_err, S_FC_NONAME, base_name(src));
+            log_add(rs(S_FC_L_NONAME), base_name(src));
             qpos++;
             continue;
         }
@@ -851,7 +823,7 @@ static void start_next(void)
         f_total = 1;
         cur = j;
         cur_t0 = now_ms();
-        sprintf(t_file, "Reading %.30s", base_name(src));
+        rsf(t_file, sizeof t_file, S_FC_READING, base_name(src));
         set_total_text();
         set_stat_text((int)(qpos * 100L / (qn ? qn : 1)));
         dlg_draw(P_ROOT, 0);
@@ -875,17 +847,17 @@ void win_job_finished(VWIN *w, JOB *j)
     char t[24];
     if (j->res.err == E_CANCEL || j->cancel) {
         cancelling = 1;
-        log_add("%s: cancelled", base_name(j->q.path));
+        log_add(rs(S_FC_L_CANCEL), base_name(j->q.path));
     } else if (j->res.err) {
         n_fail++;
         if (!first_err[0])
             sprintf(first_err, "%.20s: %.40s", base_name(j->q.path),
                     j->res.detail[0] ? j->res.detail : fv_errstr(j->res.err));
-        log_add("%s: failed, %s%s%s", base_name(j->q.path), fv_errstr(j->res.err),
+        log_add(rs(S_FC_L_FAILED), base_name(j->q.path), fv_errstr(j->res.err),
                 j->res.detail[0] ? ": " : "", j->res.detail);
     } else {
         n_ok++;
-        log_add("%s -> %s  %s", base_name(j->q.path), base_name(j->q.out),
+        log_add(rs(S_FC_L_OK), base_name(j->q.path), base_name(j->q.out),
                 secs(now_ms() - cur_t0, t));
     }
     {
@@ -910,8 +882,8 @@ void win_stage(VWIN *w, int stage)
     (void)w;
     if (!cur)
         return;
-    verb = stage == 0 ? "Reading" : (stage == 1 && cur_dith) ? "Dithering" : "Writing";
-    sprintf(t_file, "%s %.30s", verb, base_name(cur->q.path));
+    verb = rs(stage == 0 ? S_FC_READINGV : (stage == 1 && cur_dith) ? S_FC_DITHERING : S_FC_WRITING);
+    snprintf(t_file, sizeof t_file, "%s %.30s", verb, base_name(cur->q.path));
     dlg_draw(P_FILE, 0);
 }
 
@@ -970,7 +942,7 @@ static int choose_dest(void)
         strcpy(path, app_folder);
     }
     strcat(path, "*.*");
-    if (!fc_file_select(path, name, "Destination folder (OK)"))
+    if (!fc_file_select(path, name, rs(S_FC_F_DEST)))
         return 0;
     s = strrchr(path, '\\');
     if (!s)
@@ -989,7 +961,7 @@ static void begin(void)
     show_log();                              /* open the icon: the log */
     if (!qn || qpos >= qn) {
         if (n_skip && !running) {
-            alertf("[1][FConv: none of these|are pictures FConv can read.][ OK ]");
+            alert_rs(S_FC_NOPICS);
             n_skip = 0;
         }
         return;
@@ -1023,15 +995,17 @@ static void begin(void)
                     tm->tm_mday, tm->tm_hour, tm->tm_min);
         else
             strcpy(when, "");
-        log_add("%s  %d file%s to %s, %s %s", when, qn, qn == 1 ? "" : "s", cs.dest,
-                cs.pdf ? "PDF" : "IMG", fmt_name());
+        if (qn == 1)
+            log_add(rs(S_FC_BATCH1), when, cs.dest, cs.pdf ? "PDF" : "IMG", fmt_name());
+        else
+            log_add(rs(S_FC_BATCH), when, qn, cs.dest, cs.pdf ? "PDF" : "IMG", fmt_name());
     }
     running = 1;
     finished = cancelling = 0;
     n_ok = n_fail = 0;
     first_err[0] = 0;
     cur = 0;
-    strcpy(t_btn, "Cancel");
+    snprintf(t_btn, sizeof t_btn, "%s", rs(S_B_CANCEL));
     ptree[P_BTN].ob_state = 0;
     t_file[0] = 0;
     set_total_text();
@@ -1057,60 +1031,25 @@ static void dlg_button(void)
 static int  mainw;                           /* window handle             */
 static int  iconified;                       /* 1 AES, 2 our own          */
 static GRECT main_full;                      /* size before iconifying    */
-static short ic_data[64], ic_mask[64];
-static ICONBLK ic_blk;
-static OBJECT ic_tree[2];
+static OBJECT *ic_tree;                      /* T_ICON of the resource file */
 static char ic_label[] = "FConv";
 
-static void ic_set(int x, int y)
-{
-    if (x >= 0 && x < 32 && y >= 0 && y < 32)
-        ic_data[y * 2 + (x >> 4)] |= (short)(0x8000U >> (x & 15));
-}
-
-/* a picture with an arrow into a page */
 static void fc_build_icon(void)
 {
-    int x, y;
-    memset(ic_data, 0, sizeof ic_data);
-    for (x = 1; x < 15; x++) { ic_set(x, 6); ic_set(x, 19); }
-    for (y = 6; y < 20; y++) { ic_set(1, y); ic_set(14, y); }
-    for (y = 0; y < 8; y++)                   /* mountain */
-        for (x = 0; x <= y; x++) { ic_set(7 - x, 11 + y); ic_set(7 + x, 11 + y); }
-    ic_set(11, 9); ic_set(12, 9); ic_set(11, 10); ic_set(12, 10);   /* sun */
-    for (x = 15; x < 20; x++) ic_set(x, 13);  /* arrow */
-    for (y = 0; y < 4; y++) { ic_set(19 - y, 10 + y); ic_set(19 - y, 16 - y); }
-    for (y = 4; y < 28; y++) { ic_set(21, y); ic_set(30, y); }      /* page */
-    for (x = 21; x < 31; x++) { ic_set(x, 4); ic_set(x, 27); }
-    for (y = 8; y < 25; y += 3)
-        for (x = 23; x < 29; x++) ic_set(x, y);
-    for (y = 0; y < 32; y++) {
-        ic_mask[y * 2] = (y >= 4 && y <= 27) ? (short)0x7FFF : 0;
-        ic_mask[y * 2 + 1] = (y >= 4 && y <= 27) ? (short)0xFFFE : 0;
-    }
-    memset(&ic_blk, 0, sizeof ic_blk);
-    ic_blk.ib_pmask = ic_mask;
-    ic_blk.ib_pdata = ic_data;
-    ic_blk.ib_ptext = ic_label;
-    ic_blk.ib_char = 0x1000;
-    ic_blk.ib_xicon = 16; ic_blk.ib_yicon = 0;
-    ic_blk.ib_wicon = 32; ic_blk.ib_hicon = 32;
-    ic_blk.ib_xtext = 0; ic_blk.ib_ytext = 32;
-    ic_blk.ib_wtext = 64; ic_blk.ib_htext = 8;
-    obj_add(ic_tree, 0, -1, G_IBOX, 0, 0, 0L, 0, 0, 64, 40);
-    obj_add(ic_tree, 1, 0, G_ICON, LASTOB, 0, (long)&ic_blk, 0, 0, 64, 40);
+    ic_tree = rs_tree(T_ICON);
+    ic_tree[1].ob_spec.iconblk->ib_ptext = ic_label;
 }
 
 static const char *fmt_name(void)
 {
     static char b[40];
     switch (cs.xfmt) {
-    case XF_ORIGINAL: return "original depth";
-    case XF_TRUE:     return "true colour (24 bit)";
-    case XF_MONO:     return "mono (1 bit)";
+    case XF_ORIGINAL: return rs(S_FC_X_ORIG);
+    case XF_TRUE:     return rs(S_FC_X_TRUE);
+    case XF_MONO:     return rs(S_FC_X_MONO);
     }
-    if (dinfo.truecolor) return "screen colours (24 bit)";
-    sprintf(b, "screen colours (%d)", scr_planes >= 8 ? 256 : 1 << scr_planes);
+    if (dinfo.truecolor) return rs(S_FC_X_SCR24);
+    rsf(b, sizeof b, S_FC_X_SCR, scr_planes >= 8 ? 256 : 1 << scr_planes);
     return b;
 }
 
@@ -1145,24 +1084,24 @@ static void draw_main(GRECT *clip)
     x = wk.g_x + 8;
     y = wk.g_y + 4;
     vst_effects(vdih, 1);
-    v_gtext(vdih, x, y, "FConv " FV_VERSION " (" FV_CPU ") - drop pictures or folders here");
+    rsf(line, sizeof line, S_FC_M_TITLE, FV_VERSION, FV_CPU);
+    v_gtext(vdih, x, y, line);
     vst_effects(vdih, 0);
     y += cell_h + 6;
-    sprintf(line, "Format:       %s, %s", cs.pdf ? "PDF" : "GEM IMG", fmt_name());
+    rsf(line, sizeof line, S_FC_M_FORMAT, cs.pdf ? "PDF" : "GEM IMG", fmt_name());
     v_gtext(vdih, x, y, line); y += cell_h;
-    sprintf(line, "Dither:       %s%s", prefs.dither == DITH_FS ? "Floyd-Steinberg" :
-            prefs.dither == DITH_ATKINSON ? "Atkinson" : prefs.dither == DITH_ORDERED ?
-            "ordered" : "none", prefs.serpentine && prefs.dither != DITH_ORDERED &&
-            prefs.dither != DITH_NONE ? ", serpentine" : "");
+    rsf(line, sizeof line, S_FC_M_DITHER, prefs.dither == DITH_FS ? "Floyd-Steinberg" :
+        prefs.dither == DITH_ATKINSON ? "Atkinson" : prefs.dither == DITH_ORDERED ?
+        rs(S_FC_M_ORDERED) : rs(S_FC_M_NONE), prefs.serpentine && prefs.dither != DITH_ORDERED &&
+        prefs.dither != DITH_NONE ? rs(S_FC_M_SERP) : "");
     v_gtext(vdih, x, y, line); y += cell_h;
-    sprintf(line, "Destination:  %.50s", cs.dest[0] ? cs.dest : "(asked for first)");
+    rsf(line, sizeof line, S_FC_M_DEST, cs.dest[0] ? cs.dest : rs(S_FC_M_ASKED));
     v_gtext(vdih, x, y, line); y += cell_h;
-    sprintf(line, "Fit to screen %s, replace %s, subfolders %s",
-            cs.fit ? "on" : "off", cs.replace ? "on" : "off", cs.subdirs ? "on" : "off");
+    rsf(line, sizeof line, S_FC_M_FLAGS, rs(cs.fit ? S_FC_ON : S_FC_OFF),
+        rs(cs.replace ? S_FC_ON : S_FC_OFF), rs(cs.subdirs ? S_FC_ON : S_FC_OFF));
     v_gtext(vdih, x, y, line); y += cell_h;
-    sprintf(line, "%s", !have_mint ? "TOS: converting inside FConv" :
-            !have_worker ? "MiNT: FVWORK.TTP not found, converting inside FConv" :
-            "MiNT: converting in background workers");
+    snprintf(line, sizeof line, "%s", rs(!have_mint ? S_FC_M_TOS :
+             !have_worker ? S_FC_M_NOWK : S_FC_M_WK));
     v_gtext(vdih, x, y, line); y += cell_h + 3;
     {
         short ln[4];
@@ -1175,7 +1114,7 @@ static void draw_main(GRECT *clip)
         v_pline(vdih, 2, ln);
         y += 4;
         if (!lognum)
-            v_gtext(vdih, x, y, "(converted files are listed here)");
+            v_gtext(vdih, x, y, (char *)rs(S_FC_M_EMPTY));
         for (i = logtop < first ? first : logtop; i < lognum && i < logtop + vis; i++) {
             v_gtext(vdih, x, y, logl[i % LOGN]);
             y += cell_h;
@@ -1380,15 +1319,8 @@ static void open_main(void)
 
 static void about(void)
 {
-    char buf[256];
-    sprintf(buf, "[1][FConv " FV_VERSION " - picture converter|"
-            FV_CPU " version|"
-            "Drop pictures or folders on|the icon: IMG or PDF files.|"
-            "%s][ OK ]",
-            !have_mint ? "TOS: converting in FConv" :
-            !have_worker ? "MiNT: FVWORK.TTP not found" :
-                           "MiNT: background workers");
-    form_alert(1, buf);
+    alert_rs(S_FC_ABOUT, FV_VERSION, FV_CPU,
+             rs(!have_mint ? S_FC_AB_TOS : !have_worker ? S_FC_AB_NOWK : S_FC_AB_WK));
 }
 
 static void do_convert_files(void)
@@ -1400,7 +1332,7 @@ static void do_convert_files(void)
         strcat(path, "*.*");
     }
     name[0] = 0;
-    if (!fc_file_select(path, name, "Convert picture"))
+    if (!fc_file_select(path, name, rs(S_FC_F_CONV)))
         return;
     strcpy(full, path);
     s = strrchr(full, '\\');
@@ -1423,33 +1355,24 @@ static void changed(void)
 
 static void do_menu(int title, int item)
 {
-    int t = title - 3, k = item - m_first[t >= 0 && t < NTITLE ? t : 0];
-    switch (t) {
-    case 0:
-        if (k == D_ABOUT) about();
-        break;
-    case 1:
-        if (k == F_CONVERT) do_convert_files();
-        else if (k == F_DEST) { choose_dest(); changed(); }
-        else if (k == F_QUIT) quitting = 1;
-        break;
-    case 2:
-        if (k == X_IMG) cs.pdf = 0;
-        else if (k == X_PDF) cs.pdf = 1;
-        else if (k >= X_ORIG && k <= X_MONO) cs.xfmt = k - X_ORIG;
-        else if (k == X_FIT) cs.fit = !cs.fit;
-        else if (k == X_REPLACE) cs.replace = !cs.replace;
-        else if (k == X_SUBDIRS) cs.subdirs = !cs.subdirs;
-        changed();
-        break;
-    case 3:
-        if (k >= T_FS && k <= T_NONE) prefs.dither = (char)(k - T_FS);
-        else if (k == T_SERP) prefs.serpentine = !prefs.serpentine;
-        else if (k == T_SMOOTH) prefs.smooth = !prefs.smooth;
-        else if (k == T_OPT) prefs.palmode = PAL_OPTIMISE;
-        else if (k == T_SYS) prefs.palmode = PAL_SYSTEM;
-        changed();
-        break;
+    switch (item) {
+    case MI_ABOUT:    about(); break;
+    case MI_CONVERT:  do_convert_files(); break;
+    case MI_DEST:     choose_dest(); changed(); break;
+    case MI_QUIT:     quitting = 1; break;
+    case MI_IMG:      cs.pdf = 0; changed(); break;
+    case MI_PDF:      cs.pdf = 1; changed(); break;
+    case MI_ORIG: case MI_TRUE: case MI_SCREEN: case MI_MONO:
+                      cs.xfmt = item - MI_ORIG; changed(); break;
+    case MI_FIT:      cs.fit = !cs.fit; changed(); break;
+    case MI_REPLACE:  cs.replace = !cs.replace; changed(); break;
+    case MI_SUBDIRS:  cs.subdirs = !cs.subdirs; changed(); break;
+    case MI_FS: case MI_ATK: case MI_ORD: case MI_NONE:
+                      prefs.dither = (char)(item - MI_FS); changed(); break;
+    case MI_SERP:     prefs.serpentine = !prefs.serpentine; changed(); break;
+    case MI_SMOOTH:   prefs.smooth = !prefs.smooth; changed(); break;
+    case MI_PERPIC:   prefs.palmode = PAL_OPTIMISE; changed(); break;
+    case MI_SYSPAL:   prefs.palmode = PAL_SYSTEM; changed(); break;
     }
     menu_tnormal(menu, title, 1);
 }
@@ -1587,6 +1510,8 @@ static void message(short *msg)
     if (msg[0] != WM_REDRAW)
         dbg("message %04x from %d: %d %d %d %d %d", (unsigned short)msg[0], msg[1],
             msg[3], msg[4], msg[5], msg[6], msg[7]);
+    if (wd_message(msg))                     /* alerts in windows */
+        return;
     switch (msg[0]) {
     case MN_SELECTED:  do_menu(msg[3], msg[4]); return;
     case AP_TERM:      quitting = 1; return;
@@ -1695,7 +1620,8 @@ static void message(short *msg)
 static void button(int mx, int my, int clicks)
 {
     int h = wind_find(mx, my);
-    (void)clicks;
+    if (wd_button(h, mx, my, clicks))
+        return;
     if (pdlg > 0 && h == pdlg) {
         dlg_place();
         if (objc_find(ptree, 0, 8, mx, my) == P_BTN && !(ptree[P_BTN].ob_state & SELECTED))
@@ -1714,7 +1640,8 @@ static void button(int mx, int my, int clicks)
 static void key(int ks, int k)
 {
     int c = k & 0xFF;
-    (void)ks;
+    if (wd_key(ks, k))
+        return;
     if (c == 15) do_convert_files();         /* ^O */
     else if (c == 4) { choose_dest(); changed(); }   /* ^D */
     else if (c == 17) quitting = 1;          /* ^Q */
@@ -1751,13 +1678,25 @@ int gui_coop_poll(void)
 
 /* ----------------------------------------------------------------- main */
 
+/* appl_getinfo is there: AES 4.0 and later, MagiC, or ?AGI (WINX etc.) */
+static int have_agi(void)
+{
+    return _AESversion >= 0x0400 || aes_magic || appl_find("?AGI") >= 0;
+}
+
 static int detect_3d(void)
 {
     short o1 = 0, o2 = 0, o3 = 0, o4 = 0;
-    if ((_AESversion >= 0x0400 || appl_find("?AGI") >= 0) &&
-        appl_getinfo(13, &o1, &o2, &o3, &o4))
+    if (have_agi() && appl_getinfo(13, &o1, &o2, &o3, &o4))
         return o1 != 0;
     return _AESversion >= 0x0340;
+}
+
+/* MagiC-style check boxes and round radio buttons (appl_getinfo 13) */
+static int detect_xbutton(void)
+{
+    short o1 = 0, o2 = 0, o3 = 0, o4 = 0;
+    return have_agi() && appl_getinfo(13, &o1, &o2, &o3, &o4) && (o4 & 4);
 }
 
 static int detect_iconify(void)
@@ -1765,7 +1704,7 @@ static int detect_iconify(void)
     short o1 = 0, o2 = 0, o3 = 0, o4 = 0;
     if (_AESversion >= 0x0410)
         return 1;
-    if (_AESversion < 0x0400 && appl_find("?AGI") < 0)
+    if (!have_agi())
         return 0;
     if (!appl_getinfo(11, &o1, &o2, &o3, &o4))
         return 0;
@@ -1810,21 +1749,31 @@ int main(int argc, char **argv)
     job_app_name = "fconv " FV_VERSION " (" FV_CPU ")";
     job_log_name = "FCONV.LOG";
     job_init_system();
+    {
+        long v;
+        aes_magic = Getcookie(0x4D616758L /* MagX */, &v) == C_FOUND;
+    }
     aes_iconify = detect_iconify();
     aes_3d = detect_3d();
+    aes_xbutton = detect_xbutton();
+    if (!rsc_open("FCONV", language())) {
+        form_alert(1, "[3][FCONV.RSC is missing.|Copy it next to FCONV.PRG.][ Quit ]");
+        v_clsvwk(vdih);
+        appl_exit();
+        return 1;
+    }
+    wd_alert_tree = T_ALERT;
+    wd_app_title = " FConv ";
+    for (i = 0; i < 8; i++)                   /* error texts, translated */
+        fv_err_text[i] = rs(S_E_OK + i);
     dbg("AES %04x screen %dx%d planes %d truecolor %d, format %d dest '%s'",
         _AESversion, scr_w, scr_h, scr_planes, dinfo.truecolor, cs.xfmt, cs.dest);
 
-    if (_AESversion >= 0x0400)
+    if (_AESversion >= 0x0400 || aes_magic)
         shel_write(9, 1, 0, 0L, 0L);          /* AP_TERM */
     if (_AESnumapps != 1 || _AESversion >= 0x0400)
         menu_register(ap_id, "  FConv");
 
-    if (dinfo.truecolor)
-        strcpy(scr_item, "  Screen colours (24 bit)   ");
-    else
-        sprintf(scr_item, "  Screen colours (%3d)      ",
-                scr_planes >= 8 ? 256 : 1 << scr_planes);
     fc_build_menu();
     menu_bar(menu, 1);
     fc_menu_update();
@@ -1852,12 +1801,14 @@ int main(int argc, char **argv)
     if (cur)
         job_cancel(cur);
     job_kill_all();
+    wd_close_all();
     dlg_close();
     if (mainw > 0) {
         wind_close(mainw);
         wind_delete(mainw);
     }
     menu_bar(menu, 0);
+    rsrc_free();
     v_clsvwk(vdih);
     appl_exit();
     return 0;

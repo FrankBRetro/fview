@@ -100,7 +100,7 @@ static int file_exists(const char *p)
 }
 
 /* the folder FVIEW.PRG was started from (ends in a backslash) */
-static void app_dir(char *dir)
+void job_app_dir(char *dir)
 {
     char cmd[256], tail[128], *s;
     cmd[0] = 0;
@@ -150,7 +150,7 @@ void job_init_system(void)
 {
     long v;
     char dir[256];
-    app_dir(dir);
+    job_app_dir(dir);
 #if FV_LOG
     /* step log next to the program; switch off with FV_LOG=0 */
     strcpy(log_path, dir);

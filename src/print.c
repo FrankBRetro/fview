@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "gemui.h"
+#include "fvrsc.h"
 
 #define PRN_DEVICE 21
 #define BAND 64
@@ -58,7 +59,7 @@ static VWIN *prn_win;              /* the window whose panel shows progress */
 static void prn_page_done(PRN *p)
 {
     if (prn_win)
-        win_status(prn_win, "Sending the page to the printer...");
+        win_status(prn_win, rs(S_PR_SENDPAGE));
     v_updwk(p->h);
     v_clrwk(p->h);
     if (prn_win)
@@ -79,7 +80,7 @@ static void prn_header(PRN *p, VWIN *w, long page, int *top)
     vst_effects(p->h, TA_BOLD);
     vst_color(p->h, 1);
     vswr_mode(p->h, MD_TRANS);
-    sprintf(t, "%.80s   page %ld", w->path, page);
+    rsf(t, sizeof t, S_PR_HEAD, w->path, page);
     v_gtext(p->h, 0, 0, t);
     vst_effects(p->h, 0);
     {
@@ -194,7 +195,7 @@ static int print_text(PRN *p, VWIN *w, PROG *pg)
     int printed = 0;
 
     txt_measure(&td, p->h, 2540 / p->um_h, p->ncolors, p->um_w);
-    win_status(w, "Laying out the pages...");
+    win_status(w, rs(S_PR_LAYOUT));
     n = txt_layout(w->blob, w->img.doclen, &td, p->pw - 2 * margin, &lines, pg);
     if (pg->cancelled || (n < 0 && pg->cancelled))
         return E_CANCEL;
@@ -264,43 +265,63 @@ static int print_pdf(PRN *p, VWIN *w, long from, long to, PROG *pg)
 
 /* ---------------------------------------------------------------- entry */
 
+static void print_go(VWIN *w, long from, long to);
+
+/* a window waiting for the answer to "Print ...?", with the page the
+   question named; one for each question                              */
+typedef struct { VWIN *w; long page; } PRQ;
+
+static void print_answer(int b, void *ctx)
+{
+    PRQ q = *(PRQ *)ctx;
+    VWIN *w = q.w;
+    free(ctx);
+    if (b == 0 || win_busy(w) || w->state == ST_ERROR)
+        return;
+    if (w->kind == K_PDF) {
+        if (b == 1)
+            print_go(w, 0, w->npages - 1);
+        else if (b == 2 && q.page < w->npages)
+            print_go(w, q.page, q.page);
+    } else if (b == 1)
+        print_go(w, 0, 0);
+}
+
+/* asks first, in a window of its own: nothing waits for the answer */
 void print_window(VWIN *w)
+{
+    if (!w || w->kind == K_MAIN || win_busy(w) || w->state == ST_ERROR)
+        return;
+    if (!vq_gdos()) {
+        alert_rs(S_AL_NOGDOS);
+        return;
+    }
+    {
+        PRQ *q = calloc(1, sizeof *q);
+        if (!q)
+            return;
+        q->w = w;
+        q->page = w->page;
+        if (w->kind == K_PDF)
+            alert_ask(1, print_answer, q, w, S_AL_PRINTPG, win_base_name(w->path),
+                      (int)(w->page + 1));
+        else
+            alert_ask(1, print_answer, q, w, S_AL_PRINT, win_base_name(w->path));
+    }
+}
+
+static void print_go(VWIN *w, long from, long to)
 {
     PRN p;
     PROG pg;
     int e = E_OK;
-    long from = 0, to = 0;
-    char msg[160];
 
-    if (!w || w->kind == K_MAIN || win_busy(w) || w->state == ST_ERROR)
-        return;
-    if (!vq_gdos()) {
-        alertf("[1][GDOS is not installed.|Printing needs GDOS, AMCGDOS,|"
-               "NVDI or SpeedoGDOS with a|printer driver.][ OK ]");
-        return;
-    }
-    if (w->kind == K_PDF) {
-        int b;
-        sprintf(msg, "[2][Print %.24s|on the GDOS printer?][All pages|Page %ld|Cancel]",
-                win_base_name(w->path), w->page + 1);
-        b = form_alert(1, msg);
-        if (b == 3)
-            return;
-        from = b == 1 ? 0 : w->page;
-        to = b == 1 ? w->npages - 1 : w->page;
-    } else {
-        sprintf(msg, "[2][Print %.24s|on the GDOS printer?][Print|Cancel]",
-                win_base_name(w->path));
-        if (form_alert(1, msg) != 1)
-            return;
-    }
     if (!prn_open(&p)) {
-        alertf("[1][The printer driver (device %d)|could not be opened. Check|ASSIGN.SYS.][ OK ]",
-               PRN_DEVICE);
+        alert_rs(S_AL_NODRIVER, PRN_DEVICE);
         return;
     }
     prn_win = w;
-    if (!win_begin_op(w, ST_PRINTING, "Printing", &pg)) {
+    if (!win_begin_op(w, ST_PRINTING, rs(S_PR_PRINTING), &pg)) {
         prn_win = 0;
         fonts_unload(&p.fs);
         v_clswk(p.h);
@@ -317,5 +338,5 @@ void print_window(VWIN *w)
     prn_win = 0;
     win_end_op(w);
     if (e && e != E_CANCEL)
-        alertf("[1][fview: printing failed.|%.30s][ OK ]", fv_errstr(e));
+        alert_rs(S_AL_PRTFAIL, fv_errstr(e));
 }

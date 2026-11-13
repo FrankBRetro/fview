@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stddef.h>
 #include "gemui.h"
+#include "fvrsc.h"
 
 int prefs_win;
 static OBJECT *ptree;
@@ -21,7 +22,7 @@ static const PKEY keys[] = {
     K(iff_mask), K(iff_ham), K(img_syspal), K(img_vdiorder), K(jpg_grey_mono),
     K(tabw), K(wrap), K(charset), K(md_markup), K(rtf_pict), K(pdf_zoom),
     K(pdf_gfx), K(pdf_imgbox), K(prt_scale), K(prt_dither), K(prt_header),
-    K(dither_pal),
+    K(dither_pal), K(lang),
     { 0, 0 }
 };
 
@@ -82,6 +83,8 @@ void prefs_load(PREFS *p)
     fclose(f);
     if (p->tabw != 4 && p->tabw != 8)
         p->tabw = 8;
+    if (p->lang < 0 || p->lang >= LANG_N)
+        p->lang = LANG_EN;
 }
 
 int prefs_save(const PREFS *p)
@@ -132,7 +135,7 @@ void prefs_open(void)
         prefs_win = 0;
         return;
     }
-    wind_set_str(prefs_win, WF_NAME, " fview preferences ");
+    wind_set_str(prefs_win, WF_NAME, (char *)rs(S_W_PREFS));
     wind_open_grect(prefs_win, &r);
     place_tree();
 }
@@ -240,6 +243,8 @@ void prefs_click(int mx, int my)
         int relayout = old.pdf_zoom != edit.pdf_zoom || old.pdf_gfx != edit.pdf_gfx ||
                        old.pdf_imgbox != edit.pdf_imgbox;
         prefs = edit;
+        if (old.lang != prefs.lang)          /* the resource file is loaded */
+            alert_rs(S_AL_LANG);             /* at start-up only           */
         if (old.keep_sys != prefs.keep_sys || old.ui_pens != prefs.ui_pens ||
             old.palmode != prefs.palmode) {
             extern void disp_setup_reserved(void);
@@ -250,7 +255,7 @@ void prefs_click(int mx, int my)
     }
     if (kind == PB_SAVE) {
         if (!prefs_save(&prefs))
-            alertf("[1][Could not write|%.30s][ OK ]", inf_path);
+            alert_rs(S_AL_PREFS_WRITE, inf_path);
         prefs_close();
     }
 }
