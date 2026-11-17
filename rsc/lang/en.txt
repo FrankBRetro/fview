@@ -134,7 +134,7 @@ al_range    = "[1][%.20s must be|from %ld to %ld.][ OK ]"
 al_bigmem   = "[2][That picture needs a lot|of memory. Resize anyway?][Resize|Cancel]"
 
 # ----------------------------------------------------- program, windows
-al_about    = "[1][FView %.8s - file viewer|%.16s version|Pictures, text, Markdown,|RTF, PDF, GEM metafiles|%.32s][ OK ]"
+al_about    = "[1][FView %.7s - %.11s|Pictures, text, Markdown,|RTF, PDF, GEM metafiles|%.32s|(c) 2026 Francis C Bullen][ OK ]"
 ab_tos      = "TOS: cooperative loading"
 ab_noshm    = "MiNT: no U:\SHM, cooperative"
 ab_noworker = "MiNT: FVWORK.TTP not found"
@@ -257,7 +257,7 @@ fi_smooth   = "Smooth shrink"
 fi_perpic   = "Palette per picture"
 fi_syspal   = "System palette"
 
-fc_about    = "[1][FConv %.8s - converter|%.16s version|Drop pictures or folders on|the icon: IMG or PDF files.|%.32s][ OK ]"
+fc_about    = "[1][FConv %.7s - %.11s|Drop pictures or folders on|the icon: IMG or PDF files.|%.32s|(c) 2026 Francis C Bullen][ OK ]"
 fc_ab_tos   = "TOS: converting in FConv"
 fc_ab_nowk  = "MiNT: FVWORK.TTP not found"
 fc_ab_wk    = "MiNT: background workers"

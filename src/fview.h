@@ -9,7 +9,7 @@
 
 #include <stddef.h>
 
-#define FV_VERSION "1.9.0"
+#define FV_VERSION "1.10.0"
 
 /* the CPU this build is for, from the compiler's own macros */
 #if defined(PCGEM)
