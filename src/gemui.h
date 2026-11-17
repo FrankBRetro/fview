@@ -224,6 +224,7 @@ void  pal_check_top(void);
 void  pal_restore(void);
 void  pal_invalidate(void);
 void  pal_set_pen2pix(int pen, int pix);
+int   pal_pen2pix(int pen);       /* pen -> pixel value, as probed */
 
 /* text and pdf drawing (shared by screen and printer) */
 typedef struct {

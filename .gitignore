@@ -10,3 +10,8 @@ test/convtest
 test/arctest
 test/paltest
 __pycache__/
+# PC GEM build output (pcgem/FVIEW.APP and FCONV.APP themselves are committed)
+pcgem/obj/
+pcgem/build.log
+pcgem/*.exe
+pcgem/dist/

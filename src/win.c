@@ -95,6 +95,31 @@ int win_busy(VWIN *w)
                  w->state == ST_SAVING || w->state == ST_PRINTING);
 }
 
+/* Share one palette: while a shared palette is made and the pictures are
+   dithered to it again, the finished ones would show with the wrong
+   colours. Until every picture is done they show white (the busy ones
+   their progress), and then all of them are drawn, palette and all. */
+static void share_blank(void);
+static int share_busy(void)
+{
+    int i;
+    if (!share_pal || !share_possible())    /* no palette (true colour, fixed): never */
+        return 0;
+    for (i = 0; i < nwins; i++) {
+        VWIN *v = wins[i];
+        if (!v->used || v->kind != K_IMAGE)
+            continue;
+        if (v->want_rerender)
+            return 1;
+        /* only work that changes what is shown: not counting colours,
+           saving or printing */
+        if ((v->state == ST_LOADING || v->state == ST_RENDER) &&
+            !(v->job && v->job->q.op == OP_COUNT))
+            return 1;
+    }
+    return 0;
+}
+
 static void get_work(VWIN *w)
 {
     wind_get_grect(w->handle, WF_WORKXYWH, &w->work);
@@ -557,7 +582,11 @@ void pal_init(void)
        but the VDI pens still have colours).                           */
     nq = npens ? npens : 16;
     for (i = 0; i < nq; i++)
+#ifdef PCGEM
+        vq_color(vdih, i, 1, syspal[i]);    /* the colours really set: they're written back */
+#else
         vq_color(vdih, i, 0, syspal[i]);
+#endif
     for (i = 1; i < 16 && i < nq; i++)
         if (memcmp(syspal[i], syspal[0], sizeof syspal[0]))
             same = 0;
@@ -570,6 +599,7 @@ void pal_init(void)
 }
 
 void pal_set_pen2pix(int pen, int pix) { pen2pix[pen] = pix; }
+int  pal_pen2pix(int pen) { return pen2pix[pen & 255]; }
 
 static void pal_apply(VWIN *w)
 {
@@ -589,18 +619,54 @@ static void pal_apply(VWIN *w)
     }
 }
 
-void pal_check_top(void)
+/* the palette goes with the top window; a picture's own progress dialog
+   on top counts as the picture, and "fresh", just made ready, counts as
+   on top while the top window is none of FView's (the AES may not have
+   topped it yet), so its first drawing already has its colours */
+static int share_was_busy;
+static void pal_check_top_for(VWIN *fresh)
 {
-    VWIN *w = win_top(), *want = 0;
+    short top = 0, d;
+    VWIN *w, *want = 0;
+    int busy = share_busy();
+    if (share_was_busy && !busy) {
+        /* the shared palette work is over, however it ended: every
+           picture is drawn again, with the palette below */
+        int i;
+        share_was_busy = 0;
+        dbg("shared palette: every picture done, drawing them all");
+        pal_owner = (VWIN *)-1;
+        for (i = 0; i < nwins; i++)
+            if (wins[i]->used && wins[i]->kind == K_IMAGE && !wins[i]->iconified &&
+                wins[i]->handle > 0)
+                win_post_redraw(wins[i]);
+    }
+    share_was_busy = busy;
     if (npens == 0 || dinfo.fixed_palette)
         return;
-    if (w && w->kind == K_IMAGE && w->haspal && !w->iconified && w->disp.fd_addr)
+    wind_get(0, WF_TOP, &top, &d, &d, &d);
+    w = win_find(top);
+    if (!w)
+        w = win_find_dlg(top);
+    if (!w && fresh)
+        w = fresh;
+    /* one of FView's own dialogs on top (an alert, Preferences, picture
+       settings): the colours stay as they are, so the pictures behind
+       don't change; another program's window gets the system ones */
+    if (!w && !busy && pal_owner != (VWIN *)-1 &&
+        (wd_find(top) || picdlg_handle(top) || prefs_handle(top)))
+        return;
+    if (w && w->kind == K_IMAGE && w->haspal && !w->iconified && w->disp.fd_addr &&
+        !busy)
         want = w;
     if (want != pal_owner) {
+        dbg("palette: top window %d, %s", top, want ? "the picture's own" : "the system one");
         pal_apply(want);
         pal_owner = want;
     }
 }
+
+void pal_check_top(void) { pal_check_top_for(0); }
 
 void pal_invalidate(void) { pal_owner = (VWIN *)-1; }
 
@@ -956,6 +1022,10 @@ static void draw_content(VWIN *w, GRECT *r)
         vst_color(vdih, 1);
         vswr_mode(vdih, MD_TRANS);
         v_gtext(vdih, w->work.g_x + 8, w->work.g_y + 8, w->errmsg);
+        return;
+    }
+    if (w->kind == K_IMAGE && share_busy()) {
+        clear_rect(r, 0);                  /* until the shared palette is in */
         return;
     }
     image_origin(w, &ox, &oy);
@@ -1378,7 +1448,24 @@ void win_load(VWIN *w, const char *path)
         w->job->q.th = w->work.g_h;
     }
     job_start(w->job);
+    share_blank();
     menu_update();
+}
+
+/* Share one palette: as soon as work starts that will change the shared
+   palette (a picture loading, being dithered again, the palette made), the
+   other pictures go white at once and the screen has the system colours */
+static void share_blank(void)
+{
+    int i;
+    if (!share_busy())
+        return;
+    pal_invalidate();
+    pal_check_top();
+    for (i = 0; i < nwins; i++)
+        if (wins[i]->used && wins[i]->kind == K_IMAGE && !wins[i]->iconified &&
+            wins[i]->handle > 0)
+            win_redraw_all(wins[i]);
 }
 
 static void start_render(VWIN *w)
@@ -1404,6 +1491,7 @@ static void start_render(VWIN *w)
     begin_panel(w, rs(S_PR_DITH));
     win_redraw_all(w);
     job_start(j);
+    share_blank();
 }
 
 void win_set_zoom(VWIN *w, int zoom)
@@ -1437,6 +1525,38 @@ static int to_device(VWIN *w, JOBRES *r)
     dev = malloc(rowbytes * h);
     if (!dev)
         return 0;
+#ifdef PCGEM
+    /* PC GEM: the whole picture as one standard bitmap, planes one after
+     * another (the bands put together); the layer's vr_trnfm keeps it in
+     * standard format, marked, and converts it a strip at a time when it
+     * is copied to the screen */
+    {
+        MFDB s, d;
+        long psize;
+        int p;
+        for (y = 0; y < h; y++) {
+            const u16 *row = std_row((u16 *)r->ptr[RB_DISP], y, h, wdw, scr_planes, &psize);
+            for (p = 0; p < scr_planes; p++)
+                memcpy(dev + (p * h + y) * wdw * 2, row + p * psize, wdw * 2);
+        }
+        memset(&s, 0, sizeof s);
+        s.fd_addr = dev;
+        s.fd_w = (short)(wdw * 16);
+        s.fd_h = (short)h;
+        s.fd_wdwidth = (short)wdw;
+        s.fd_stand = 1;
+        s.fd_nplanes = scr_planes;
+        d = s;
+        d.fd_stand = 0;
+        vr_trnfm(vdih, &s, &d);
+        job_release(r, RB_DISP);
+        if (w->dispmem)
+            free(w->dispmem);
+        w->dispmem = dev;
+        w->disp = d;
+        return 1;
+    }
+#endif
     for (y = 0; y < h; y += STD_BAND) {
         MFDB s, d;
         long psize;
@@ -1486,6 +1606,10 @@ static void fit_window_to_image(VWIN *w)
     dbg("fit window %d to %d,%d %dx%d", w->handle, out.g_x, out.g_y, out.g_w, out.g_h);
     wind_set_grect(w->handle, WF_CURRXYWH, &out);
     get_work(w);
+    /* smaller now: have what was under the old size redrawn, desktop and
+       windows (PC GEM's AES left strips of the old window behind) */
+    if (out.g_w < cur.g_w || out.g_h < cur.g_h)
+        form_dial(FMD_FINISH, 0, 0, 0, 0, cur.g_x, cur.g_y, cur.g_w, cur.g_h);
 }
 
 static void show_error(VWIN *w, JOBRES *r)
@@ -1699,6 +1823,11 @@ void win_job_finished(VWIN *w, JOB *j)
         dst->state = ST_IDLE;
         if ((op == OP_LOAD || op == OP_DUP || op == OP_RESIZE) && dst->zoom == ZOOM_REAL)
             fit_window_to_image(dst);
+        /* fitted with its aspect kept, the picture fills one direction only:
+           the window takes in the other, so there's no border */
+        else if (dst->zoom == ZOOM_FIT && dst->disp.fd_addr &&
+                 (dst->img.dw < dst->work.g_w || dst->img.dh < dst->work.g_h))
+            fit_window_to_image(dst);
         doc_size(dst);
         if (op != OP_RENDER)
             picdlg_refresh(dst);
@@ -1732,13 +1861,14 @@ void win_job_finished(VWIN *w, JOB *j)
     win_update_info(dst);
     win_set_sliders(dst);
     pal_invalidate();
-    pal_check_top();
+    pal_check_top_for(dst);     /* its colours before it is first drawn */
     /* the window may just have been resized: let the AES finish with the
        frame and tell us what to draw, as well as drawing now           */
     win_redraw_all(dst);
     win_post_redraw(dst);
     dbg("window %d ready, work %d,%d %dx%d", dst->handle, dst->work.g_x, dst->work.g_y,
         dst->work.g_w, dst->work.g_h);
+    pal_check_top();                    /* the last shared one: all drawn */
     menu_update();
 }
 
@@ -1782,6 +1912,7 @@ static JOB *tool_job(VWIN *w, int op, const char *verb)
 static void tool_go(VWIN *w)
 {
     job_start(w->job);
+    share_blank();
     menu_update();
 }
 
@@ -2019,6 +2150,7 @@ void win_share_update(void)
     begin_panel(host, rs(S_PR_SHARING));
     win_redraw_all(host);
     job_start(host->job);
+    share_blank();
     menu_update();
 }
 

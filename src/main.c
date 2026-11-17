@@ -91,7 +91,11 @@ void disp_reserved_for(DISPINFO *d, int palmode)
     d->palmode = palmode;
     d->ui_n = 0;
     for (i = 0; i < n; i++) {
+#ifdef PCGEM
+        int pix = pal_pen2pix(i);       /* the driver's own order, as probed */
+#else
         int pix = vdi2pix(i, scr_planes);
+#endif
         int ui = i < 2 || (aes_3d && n >= 16 && (i == 8 || i == 9));
         if (d->fixed_palette || palmode == PAL_SYSTEM)
             d->reserved[pix] = 1;
@@ -256,9 +260,45 @@ static void probe_palette(int pal_known_interleaved)
     static u8 raw[256 * 2 * 8 / 16 * 2];
     static int vals[256], rb[256];
     int n = scr_planes >= 8 ? 256 : 1 << scr_planes, i, *map = 0;
+#ifdef PCGEM
+    /* PC GEM's VDI doesn't draw into memory: each pen goes on the top-left
+     * pixel of the screen and is read back, then that pixel is put back */
+    {
+        short r4[4] = { 0, 0, 0, 0 }, pel = 0, idx = 0, was;
+        (void)raw; (void)rb; (void)pal_known_interleaved;
+        if (scr_planes < 2 || scr_planes > 8)
+            return;
+        wind_update(BEG_UPDATE);
+        graf_mouse(M_OFF, NULL);
+        vs_clip(vdih, 0, NULL);
+        v_get_pixel(vdih, 0, 0, &pel, &idx);
+        was = idx;
+        vswr_mode(vdih, MD_REPLACE);
+        vsf_interior(vdih, FIS_SOLID);
+        vsf_perimeter(vdih, 0);
+        for (i = 0; i < n; i++) {
+            vsf_color(vdih, i);
+            vr_recfl(vdih, r4);
+            pel = idx = 0;
+            v_get_pixel(vdih, 0, 0, &pel, &idx);
+            vals[i] = pel & 0xFF;
+        }
+        vsf_color(vdih, was);
+        vr_recfl(vdih, r4);
+        vsf_color(vdih, 1);
+        graf_mouse(M_ON, NULL);
+        wind_update(END_UPDATE);
+    }
+#else
     if (scr_planes < 2 || scr_planes > 8 || !probe_strip(n, 0, 0, raw, vals))
         return;
+#endif
+#ifdef PCGEM
+    (void)pal_known_interleaved;    /* PC GEM: always standard planes and vr_trnfm */
+    if (0) {
+#else
     if (scr_planes == 8 && !pal_known_interleaved) {
+#endif
         for (i = 0; i < n; i++)
             rb[i] = raw[i];
         if (all_distinct(rb, n)) {
@@ -268,6 +308,14 @@ static void probe_palette(int pal_known_interleaved)
     }
     if (!map && all_distinct(vals, n))
         map = vals;
+#ifdef PCGEM
+    if (!map) {                 /* read off the screen: trust it unless every pen looked the same */
+        for (i = 1; i < n && vals[i] == vals[0]; i++) ;
+        dbg("palette probe: pens not all distinct%s", i < n ? ", used anyway" : ", all the same: not used");
+        if (i < n)
+            map = vals;
+    }
+#endif
     dbg("palette probe: chunky %d, pen 0 -> %d, 1 -> %d, 2 -> %d, 15 -> %d, 255 -> %d",
         dinfo.chunky, map ? map[0] : -1, map ? map[1] : -1, map ? map[2] : -1,
         map && n > 15 ? map[15] : -1, map && n > 255 ? map[255] : -1);
@@ -382,7 +430,13 @@ static void disp_init(void)
 
     /* ST-style interleaved bitplanes, the layout fview can check and,
        if need be, write to directly */
+#ifdef PCGEM
+    /* PC GEM: the screen is the VDI's alone (no Logbase), and its device
+       format isn't the ST's: every copy goes through vro_cpyfm */
+    screen_interleaved = 0;
+#else
     screen_interleaved = !dinfo.truecolor && (!edDI || scr[0] == 0);
+#endif
     pal_init();
     /* current palette by pixel value */
     n = dinfo.truecolor ? 0 : (scr_planes >= 8 ? 256 : 1 << scr_planes);
@@ -484,8 +538,15 @@ void menu_update(void)
         menu_ienable(menu, MI_COUNT, tool);
         menu_ienable(menu, MI_LOADPAL, tool);
         menu_ienable(menu, MI_SAVEPAL, img);
-        menu_ienable(menu, MI_SHAREPAL, !dinfo.truecolor && !dinfo.fixed_palette &&
-                                        scr_planes > 1);
+        {
+            /* sharing needs two pictures at least; once on, it can go off */
+            int i, npics = 0;
+            for (i = 0; i < nwins; i++)
+                if (wins[i]->used && wins[i]->kind == K_IMAGE && wins[i]->img.im.px)
+                    npics++;
+            menu_ienable(menu, MI_SHAREPAL, !dinfo.truecolor && !dinfo.fixed_palette &&
+                                            scr_planes > 1 && (share_pal || npics >= 2));
+        }
         menu_icheck(menu, MI_SHAREPAL, share_pal);
     }
 }
@@ -1122,8 +1183,8 @@ int main(int argc, char **argv)
     wind_get_grect(0, WF_WORKXYWH, &desk);
 
     prefs_load(&prefs);
+    job_init_system();      /* first: it opens the log disp_init writes to */
     disp_init();
-    job_init_system();
     fonts_load(&scrfonts, vdih, scr_sysfonts);   /* GDOS fonts, if any */
     {
         long v;

@@ -1,4 +1,4 @@
-# FView 1.8 — GEM file viewer and FConv picture converter for TOS, MultiTOS, MiNT and MagiC
+# FView 1.9 — GEM file viewer and FConv picture converter for TOS, MultiTOS, MiNT and MagiC
 
 FView (`fview.prg`) starts with its menu bar and an **iconified main window**. Drop files
 on it (or on any fview window) from the desktop, open them with **File ›
@@ -27,6 +27,22 @@ its own window.
 Medium resolution pictures are shown with their tall pixels in proportion
 (see *Pixel shape*). Multi-palette pictures are converted to true colour
 and then dithered to the screen like any other picture.
+
+## New in 1.9
+
+- **FView for PC GEM** (FreeGEM / OpenGEM on DOS, `pcgem/`): `FVIEW.APP` and
+  `FCONV.APP`, 32-bit DJGPP programs with their own copy of the PC GEM layer.
+  Pictures on 16 and 256 colour screens, GEM's own colours kept while a
+  picture's palette is on, XGDOS fonts when XGDOS is loaded. See *FView for
+  PC GEM* below.
+- **Fit to window** shrinks the window to the picture, so there is no border
+  beside it.
+- **Share one palette**: while the shared palette is being made and the
+  pictures dithered to it, the other pictures show white, then all of them
+  are drawn at once with the new palette. It can only be turned on with two
+  pictures or more open.
+- A picture's palette is set before it is first drawn, and stays while one
+  of FView's own alerts or dialogs is on top.
 
 ## Building
 
@@ -89,6 +105,22 @@ whose `printf` codes differ from the English ones, and characters the
 Atari character set doesn't have. `test/rscshow.py file.rsc out/` reads a
 resource file the way `rsrc_load` does, reports overlapping objects and
 draws the trees as PNG pictures (`--magic` for MagiC's check boxes).
+
+## FView for PC GEM
+
+`pcgem/` builds FView and FConv for PC GEM (FreeGEM / OpenGEM on DOS) with
+DJGPP and John Elliott's GEM bindings:
+
+```
+make -C pcgem             # FVIEW.APP and FCONV.APP
+make -C pcgem LOG=1       # log builds (FVIEW.LOG / FCONV.LOG), clean first
+make -C pcgem install     # copy them to C:\FVIEW of the PC-GEM test setup
+```
+
+They need a DPMI host (`CWSDPMI.EXE` next to them, or one already loaded)
+and run without a MiNT background worker, cooperatively. With
+[XGDOS for PC GEM](https://github.com/FrankBRetro/xgdos) loaded they use its
+fonts for text, RTF and PDF.
 
 ## FConv — picture converter
 

@@ -9,10 +9,12 @@
 
 #include <stddef.h>
 
-#define FV_VERSION "1.8.0"
+#define FV_VERSION "1.9.0"
 
 /* the CPU this build is for, from the compiler's own macros */
-#if defined(__mcoldfire__)
+#if defined(PCGEM)
+#define FV_CPU "PC GEM"
+#elif defined(__mcoldfire__)
 #define FV_CPU "ColdFire"
 #elif defined(__mc68020__) && defined(__mc68060__)
 #define FV_CPU "68020-68060"
